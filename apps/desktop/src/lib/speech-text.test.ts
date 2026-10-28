@@ -326,3 +326,13 @@ describe('capSpeechText', () => {
     expect(capped.length).toBeGreaterThan(3)
   })
 })
+
+describe('capSpeechText — summary budget', () => {
+  it('读得完万有引力那段（86 字）在 90 字预算下', () => {
+    const passage =
+      '万有引力故事的通俗版：传说 1665 年前后，牛顿在林肯郡老家躲避瘟疫，看到苹果落地，琢磨「苹果为什么直着往下掉，月亮为什么不掉下来」。后来他把这个想法发展成万有引力定律。'
+
+    expect(passage.length).toBe(86)
+    expect(capSpeechText(passage, 90)).toBe(passage)
+  })
+})
