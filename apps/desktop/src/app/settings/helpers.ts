@@ -177,6 +177,16 @@ export function clearsEnabledToolsets(prev: HermesConfigRecord, next: HermesConf
 // Voice renders only fields for the selected TTS/STT provider. Search and the
 // page share this rule so every indexed field can actually mount when opened.
 export function voiceFieldVisible(key: string, config: HermesConfigRecord): boolean {
+  // chained 模式由「语音搭配」统一管这对键（选中方案时一起写下去）。
+  // 再留一行裸的 provider 选择，两处就会各写各的，方案标签当场说谎。
+  if (key === 'stt.provider' || key === 'tts.provider') {
+    const mode = String(getNested(config, 'voice.voice_chat_mode') ?? 'chained')
+
+    if (mode === 'chained') {
+      return false
+    }
+  }
+
   const match = /^(tts|stt)\.([^.]+)\./.exec(key)
 
   if (!match) {

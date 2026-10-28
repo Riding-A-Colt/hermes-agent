@@ -1245,6 +1245,20 @@ export const zhOverrides = {
       voiceShortcutHintTitle: '语音录制快捷键',
       voiceShortcutHintDesc:
         '请在“设置 → 键盘快捷键”中设置语音录制快捷键（“开始 / 停止语音对话”）。voice.record_key 配置项仅适用于 CLI 和 TUI。',
+      voiceChainTitle: '语音搭配（chained 模式）',
+      voiceChainDesc:
+        'chained 模式先用识别提供方听写，再用语音提供方朗读回复。选中一条搭配会同时写入 stt.provider 与 tts.provider，下一句起生效。',
+      voiceChainAdd: '添加搭配',
+      voiceChainActive: '使用中',
+      voiceChainLabel: '搭配名称',
+      voiceChainStt: '语音识别',
+      voiceChainTts: '语音合成',
+      voiceChainSpeak: '播报',
+      voiceChainSpeakSummary: '摘要',
+      voiceChainSpeakFull: '全文',
+      voiceChainSpeakHint: (chars: number) =>
+        `摘要只念开头约 ${chars} 字，到句末就停。付费 API 音色默认摘要，本地音色默认全文。`,
+      voiceChainRemove: '删除搭配',
       showOptions: '显示选项'
     },
     hudModifier: {
@@ -3215,6 +3229,8 @@ export const zhOverrides = {
     voiceEngineLive: 'GPT-Live（全双工，委托给 Hermes）',
     voiceEngineLiveNeedsKey: '需要 OpenAI API 密钥',
     voiceEngineChangeFailed: '无法更改语音聊天引擎',
+    voiceChain: '语音搭配',
+    voiceChainChangeFailed: '无法切换语音搭配',
     voiceEngineChainedShort: '语音转文字',
     voiceEngineLiveShort: 'GPT-Live',
     voiceDictation: '语音听写',

@@ -27,6 +27,7 @@ import {
   applyAutoSpeakFromConfig,
   applyBargeInEnabledFromConfig,
   applyBargeInThresholdFromConfig,
+  applySpeechCharLimitFromConfig,
   applyThinkingSoundFromConfig,
   applyVoiceSilenceMsFromConfig,
   applyVoiceStopPhraseFromConfig
@@ -170,6 +171,8 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         applyVoiceStopPhraseFromConfig(config, defaults)
         applyBargeInEnabledFromConfig(config)
         applyBargeInThresholdFromConfig(config)
+        // chained 的摘要播报预算：选中「摘要」方案时只念开头一小段。
+        applySpeechCharLimitFromConfig(config)
         applyThinkingSoundFromConfig(config)
         applyVoiceSilenceMsFromConfig(config, defaults)
         // Resolved server-side (mode + whether a key resolves); non-critical.

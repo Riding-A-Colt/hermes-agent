@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
 import { persistBoolean, readKey, storedBoolean } from '@/lib/storage'
+import { speechLimitFor } from '@/lib/voice-chain'
 
 // Desktop read-aloud is local; voice.auto_tts belongs to the messaging gateway.
 const AUTO_SPEAK_KEY = 'hermes.desktop.autoSpeakReplies'
@@ -168,4 +169,14 @@ export function applyThinkingSoundFromConfig(
 /** Persist even an unchanged value, so migrating false is also one-time. */
 export async function setAutoSpeakReplies(enabled: boolean): Promise<void> {
   storeAutoSpeak(enabled, false)
+}
+
+// --- chained 摘要播报的预算 ------------------------------------------------
+// 由 use-hermes-config 从 config 里算出（0 = 整篇念），播报前按它截断。
+// 单独放成 atom 而不是每次播报去 fetch 配置：朗读发生在语音回调里，那里没有
+// 设置页的 config 缓存，也不该为了一句播报多打一次 HTTP。
+export const $speechCharLimit = atom<number>(0)
+
+export function applySpeechCharLimitFromConfig(config: unknown) {
+  $speechCharLimit.set(speechLimitFor(config))
 }

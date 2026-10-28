@@ -1194,6 +1194,20 @@ export const en: Translations = {
       voiceShortcutHintTitle: 'Voice recording shortcut',
       voiceShortcutHintDesc:
         'Set the voice recording shortcut in Settings → Keyboard Shortcuts ("Start / stop voice conversation"). The voice.record_key config value only applies to the CLI and TUI.',
+      voiceChainTitle: 'Voice pairing (chained)',
+      voiceChainDesc:
+        'chained mode records with the speech-to-text provider, then reads the reply with the voice provider. Picking a pairing writes stt.provider and tts.provider together; it applies from the next utterance.',
+      voiceChainAdd: 'Add pairing',
+      voiceChainActive: 'In use',
+      voiceChainLabel: 'Pairing name',
+      voiceChainStt: 'Speech to text',
+      voiceChainTts: 'Voice',
+      voiceChainSpeak: 'Read aloud',
+      voiceChainSpeakSummary: 'Summary',
+      voiceChainSpeakFull: 'Full text',
+      voiceChainSpeakHint: (chars: number) =>
+        `Summary speaks the first ~${chars} characters and stops at a sentence boundary. Paid API voices default to summary, local voices to full text.`,
+      voiceChainRemove: 'Remove pairing',
       showOptions: 'Show options'
     },
     hudModifier: {
@@ -3320,6 +3334,8 @@ export const en: Translations = {
     voiceEngineLive: 'GPT-Live (full-duplex, delegates to Hermes)',
     voiceEngineLiveNeedsKey: 'Needs an OpenAI API key',
     voiceEngineChangeFailed: 'Could not change the voice chat engine',
+    voiceChain: 'Voice pairing',
+    voiceChainChangeFailed: 'Could not switch the voice pairing',
     voiceEngineChainedShort: 'speech-to-text',
     voiceEngineLiveShort: 'GPT-Live',
     voiceDictation: 'Voice dictation',

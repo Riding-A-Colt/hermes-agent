@@ -15,9 +15,19 @@ describe('voiceFieldVisible', () => {
   it('always shows top-level + non-provider keys', () => {
     const config = cfg()
 
-    for (const key of ['tts.provider', 'stt.enabled', 'stt.provider', 'voice.auto_tts']) {
+    for (const key of ['stt.enabled', 'voice.auto_tts']) {
       expect(voiceFieldVisible(key, config)).toBe(true)
     }
+  })
+
+  it('hides the bare provider rows in chained mode — the voice pairing owns that pair', () => {
+    // Unset voice_chat_mode is chained (the backend default).
+    expect(voiceFieldVisible('tts.provider', cfg())).toBe(false)
+    expect(voiceFieldVisible('stt.provider', cfg())).toBe(false)
+    // gpt-live does not use these providers at all, so the rows stay for inspection.
+    const live = cfg({ voice: { voice_chat_mode: 'gpt-live' } })
+    expect(voiceFieldVisible('tts.provider', live)).toBe(true)
+    expect(voiceFieldVisible('stt.provider', live)).toBe(true)
   })
 
   it('shows only the selected TTS provider sub-fields', () => {
@@ -42,7 +52,7 @@ describe('voiceFieldVisible', () => {
   })
 
   it('hides every STT provider sub-field when STT is disabled', () => {
-    const config = cfg({ stt: { enabled: false, provider: 'local', local: {} } })
+    const config = cfg({ stt: { enabled: false, provider: 'local', local: {} }, voice: { voice_chat_mode: 'gpt-live' } })
     expect(voiceFieldVisible('stt.local.model', config)).toBe(false)
     // ...but the enable/provider toggles themselves stay visible.
     expect(voiceFieldVisible('stt.enabled', config)).toBe(true)

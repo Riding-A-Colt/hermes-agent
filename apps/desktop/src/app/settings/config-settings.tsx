@@ -65,6 +65,7 @@ import { QuickEntrySettings } from './quick-entry-settings'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { SharedMetricsSettings } from './shared-metrics-settings'
 import { useSettingDeepLink } from './use-setting-deep-link'
+import { VoiceChainSchemes } from './voice-chain-schemes'
 
 export function ConfigSettings({
   activeSectionId,
@@ -532,6 +533,11 @@ function ConfigSettingsInner({
       />
       {activeSectionId === 'voice' ? (
         <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
+      ) : null}
+      {/* chained 的语音搭配：一对 STT/TTS 提供方。gpt-live 自己决定声音，
+          所以只在 chained 模式下出现（组件内部再判一次模式）。 */}
+      {activeSectionId === 'voice' && (subpage === undefined || subpage === 'conversation') ? (
+        <VoiceChainSchemes config={config} onChange={updateConfig} />
       ) : null}
       {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />

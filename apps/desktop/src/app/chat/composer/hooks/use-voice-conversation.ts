@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { type ResolvedOwner, resolveOwnerNow } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { IncrementalSpeechSentenceBuffer } from '@/lib/speech-text'
+import { capSpeechText, IncrementalSpeechSentenceBuffer } from '@/lib/speech-text'
 import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
 import { startThinkingSound, stopThinkingSound } from '@/lib/thinking-sound'
 import { monitorSpeechDuringPlayback } from '@/lib/voice-barge-in'
@@ -18,7 +18,13 @@ import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { isTtsEcho } from '@/lib/voice-tts-echo'
 import { notify, notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
-import { $autoSpeakReplies, $bargeInEnabled, $bargeInThresholdMultiplier, $voiceSilenceMs } from '@/store/voice-prefs'
+import {
+  $autoSpeakReplies,
+  $bargeInEnabled,
+  $bargeInThresholdMultiplier,
+  $speechCharLimit,
+  $voiceSilenceMs
+} from '@/store/voice-prefs'
 
 import { useComposerScope } from '../scope'
 
@@ -678,9 +684,13 @@ export function useVoiceConversation({
       const response = pendingResponse()
 
       if (response && response.id === responseId) {
-        if (response.text.length > spokenSourceLengthRef.current) {
-          session.append(response.text.slice(spokenSourceLengthRef.current))
-          spokenSourceLengthRef.current = response.text.length
+        // 摘要方案：只把开头一小段喂进语音会话，剩下的正文留在屏幕上。
+        const budget = $speechCharLimit.get()
+        const speakable = budget > 0 ? capSpeechText(response.text, budget) : response.text
+
+        if (speakable.length > spokenSourceLengthRef.current) {
+          session.append(speakable.slice(spokenSourceLengthRef.current))
+          spokenSourceLengthRef.current = speakable.length
         }
 
         if (!response.pending) {
@@ -817,9 +827,13 @@ export function useVoiceConversation({
           return
         }
 
-        if (response.text.length > sourceLength) {
-          speechQueue.push(...sentenceBuffer.append(response.text.slice(sourceLength)))
-          sourceLength = response.text.length
+        // 摘要方案：非流式回退路径同样只念开头一小段。
+        const budget = $speechCharLimit.get()
+        const speakable = budget > 0 ? capSpeechText(response.text, budget) : response.text
+
+        if (speakable.length > sourceLength) {
+          speechQueue.push(...sentenceBuffer.append(speakable.slice(sourceLength)))
+          sourceLength = speakable.length
         }
 
         if (!response.pending && !responseFinished) {

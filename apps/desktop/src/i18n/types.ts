@@ -999,6 +999,18 @@ catalog: CatalogTranslations
       attachmentSizeLabel: string
       voiceShortcutHintTitle: string
       voiceShortcutHintDesc: string
+      voiceChainTitle: string
+      voiceChainDesc: string
+      voiceChainAdd: string
+      voiceChainActive: string
+      voiceChainLabel: string
+      voiceChainStt: string
+      voiceChainTts: string
+      voiceChainSpeak: string
+      voiceChainSpeakSummary: string
+      voiceChainSpeakFull: string
+      voiceChainSpeakHint: (chars: number) => string
+      voiceChainRemove: string
       showOptions: string
     }
     hudModifier: {
@@ -2916,6 +2928,8 @@ catalog: CatalogTranslations
     voiceEngineLiveNeedsKey: string
     voiceEngineChangeFailed: string
     voiceEngineChainedShort: string
+    voiceChain: string
+    voiceChainChangeFailed: string
     voiceEngineLiveShort: string
     voiceDictation: string
     speakReplies: string

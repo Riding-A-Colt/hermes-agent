@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { cutSentences, IncrementalSpeechSentenceBuffer, sanitizeTextForSpeech } from './speech-text'
+import { capSpeechText, cutSentences, IncrementalSpeechSentenceBuffer, sanitizeTextForSpeech } from './speech-text'
 
 describe('sanitizeTextForSpeech', () => {
   it('does not speak placeholders for fenced code blocks', () => {
@@ -282,5 +282,38 @@ describe('IncrementalSpeechSentenceBuffer', () => {
       'Then the answer follows here in prose.'
     ])
     expect(buffer.flush()).toEqual(['And a tail'])
+  })
+})
+
+describe('capSpeechText', () => {
+  it('returns the text untouched when it fits or no budget is set', () => {
+    expect(capSpeechText('短句。', 50)).toBe('短句。')
+    expect(capSpeechText('长一点的话。'.repeat(20), 0)).toHaveLength('长一点的话。'.repeat(20).length)
+  })
+
+  it('cuts on the last sentence stop inside the budget', () => {
+    const text = '第一句结束了。第二句也结束了。第三句很长很长很长很长地拖出去。'
+    const capped = capSpeechText(text, 20)
+
+    expect(capped).toBe('第一句结束了。第二句也结束了。')
+  })
+
+  it('falls back to a clause stop when no sentence ends inside the budget', () => {
+    const text = '这是一句没有句号的超长中文句子，中间只有一个逗号，然后一直往下说下去。'
+    const capped = capSpeechText(text, 20)
+
+    expect(capped.endsWith('，')).toBe(true)
+    expect(capped.length).toBeLessThanOrEqual(20)
+  })
+
+  it('hard-cuts when there is no punctuation at all', () => {
+    expect(capSpeechText('abcdefghijklmnopqrstuvwxyz', 10)).toBe('abcdefghij')
+  })
+
+  it('never ends on a stop too close to the start', () => {
+    // "好的，" 只有 3 个字，不能当终点——那样等于什么都没说。
+    const capped = capSpeechText('好的，我先把这个问题拆成三块来讲，第一块是语音链路，第二块是配置。', 18)
+
+    expect(capped.length).toBeGreaterThan(3)
   })
 })

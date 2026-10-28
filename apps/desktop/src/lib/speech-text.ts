@@ -353,3 +353,50 @@ export function sanitizeTextForSpeech(text: string): string {
     .replace(/\s+/g, ' ')
     .trim()
 }
+
+// --- 摘要播报的字符预算 ---------------------------------------------------
+// chained 模式下选了「摘要」的方案（付费 API 音色默认如此），语音只念开头
+// 一小段：长回复整篇念出去既费钱又像在读文档。到这里先按句末收口，退一步
+// 按逗号收口，实在没有标点才硬切——切在半句上比少念一句难听得多。
+
+const SENTENCE_STOPS = ['。', '！', '？', '!', '?', '…', '；', ';'] as const
+const CLAUSE_STOPS = ['，', ',', '、'] as const
+
+function lastStopIndex(text: string, stops: readonly string[], floor: number): number {
+  let best = -1
+
+  for (const stop of stops) {
+    const index = text.lastIndexOf(stop)
+
+    if (index > best) {
+      best = index
+    }
+  }
+
+  return best >= floor ? best : -1
+}
+
+/** Clamp spoken text to `limit` characters, ending on punctuation when it can.
+ *  `limit <= 0` (no budget) returns the text untouched. */
+export function capSpeechText(text: string, limit: number): string {
+  if (limit <= 0 || text.length <= limit) {
+    return text
+  }
+
+  const window = text.slice(0, limit)
+  const sentence = lastStopIndex(window, SENTENCE_STOPS, 0)
+
+  if (sentence >= 0) {
+    return text.slice(0, sentence + 1)
+  }
+
+  // 逗号类要防着「好的，」这种开头的短停顿——它不算把话说完。
+  const floor = Math.min(8, Math.floor(limit / 2))
+  const clause = lastStopIndex(window, CLAUSE_STOPS, floor)
+
+  if (clause >= 0) {
+    return text.slice(0, clause + 1)
+  }
+
+  return window
+}

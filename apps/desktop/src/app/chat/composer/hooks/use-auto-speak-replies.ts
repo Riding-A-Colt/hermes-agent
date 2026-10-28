@@ -2,11 +2,12 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { releaseUnplayedSpokenReply, spokenReplyOf, spokenSegmentKey } from '@/lib/spoken-reply'
+import { capSpeechText } from '@/lib/speech-text'
 import { playSpeechText } from '@/lib/voice-playback'
 import { ownsAmbientCue } from '@/store/ambient'
 import { notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
-import { $autoSpeakReplies } from '@/store/voice-prefs'
+import { $autoSpeakReplies, $speechCharLimit } from '@/store/voice-prefs'
 
 import { useComposerScope } from '../scope'
 
@@ -129,7 +130,11 @@ export function useAutoSpeakReplies({
           return
         }
 
-        void playSpeechText(reply.text, {
+        // 摘要方案（付费 API 音色默认）：只念开头一小段，长文留在屏幕上。
+        const budget = $speechCharLimit.get()
+        const spokenText = budget > 0 ? capSpeechText(reply.text, budget) : reply.text
+
+        void playSpeechText(spokenText, {
           connectionId,
           messageId: reply.id,
           profile,
