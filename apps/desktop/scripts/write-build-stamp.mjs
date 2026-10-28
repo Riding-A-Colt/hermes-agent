@@ -251,6 +251,8 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
   const updateMechanism = {
     '': 'self',
     bootstrap: 'self',
+    // A locally rebuilt fork updates itself by rebuilding, same as source.
+    mod: 'self',
     store: 'microsoft-store',
     bundled: { win32: 'app-installer', darwin: 'electron-updater' }[platform] || 'external',
     light: platform === 'darwin' ? 'electron-updater' : 'external'
@@ -263,7 +265,7 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
   }
   return {
     ...base,
-    payload: variant === "store" ? "bundled" : variant || "bootstrap",
+    payload: variant === "store" ? "bundled" : variant === "mod" ? "bootstrap" : variant || "bootstrap",
     distribution: "desktop-app",
 
     updateMechanism: commitBuild ? 'external' : updateMechanism,

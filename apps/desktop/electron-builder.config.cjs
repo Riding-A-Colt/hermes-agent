@@ -29,6 +29,11 @@ const {
   token
 } = require('./product-identity.cjs')
 
+// The rebuild fork's appId (product-identity.cjs variants.mod). Named here so
+// the extraMetadata block below can isolate its userData without importing the
+// build-time variant selector.
+const MOD_APP_ID = 'com.nousresearch.hermes-mod'
+
 // `storeMsix` is optional on the identity type but guaranteed present when
 // `store` is true (product-identity.cjs spreads it only in that branch).
 // The `store` flag is typed `boolean` in the identity, so checkJs cannot
@@ -105,7 +110,11 @@ module.exports = {
     // Electron bootstrap reads package.productName before main.ts. Keep the
     // shipped stable default, but isolate nonstable userData from first access.
     // A stable-branded channel has no token and keeps stable's userData.
-    ...((channelRequest && token) || appNamePascal !== artifactNamePascal ? { productName: displayName } : {}),
+    // The 'mod' fork build is a separate app to macOS (its own appId), so it
+    // also gets its own userData — otherwise it would reopen stable's profile.
+    ...((channelRequest && token) || appNamePascal !== artifactNamePascal || appId === MOD_APP_ID
+      ? { productName: displayName }
+      : {}),
     desktopName: appId
   },
   directories: {

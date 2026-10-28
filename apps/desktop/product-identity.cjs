@@ -8,8 +8,16 @@
 /// <reference types="node" />
 'use strict'
 
+/** @type {Record<string, { display: string, kebab: string, pascal: string }>} */
 const variants = {
   '': { display: 'Hermes', kebab: 'hermes', pascal: 'Hermes' },
+  // A locally rebuilt fork: its own display name, appId and userData so it can
+  // sit next to the official app instead of fighting it for the same profile.
+  mod: {
+    display: 'Hermes Mod',
+    kebab: 'hermes-mod',
+    pascal: 'HermesMod'
+  },
   light: {
     display: 'Hermes Light',
     kebab: 'hermes-light',
@@ -23,8 +31,8 @@ const variants = {
 }
 
 const variant = process.env.HERMES_DESKTOP_VARIANT || ''
-if (!['', 'light', 'bundled', 'store'].includes(variant)) {
-  throw new Error(`Unknown HERMES_DESKTOP_VARIANT ${variant}. expected one of (empty), light, bundled, store`)
+if (!['', 'light', 'bundled', 'store', 'mod'].includes(variant)) {
+  throw new Error(`Unknown HERMES_DESKTOP_VARIANT ${variant}. expected one of (empty), light, bundled, store, mod`)
 }
 
 // 'store' is a Store-submission packaging identity layered on the bundled

@@ -234,12 +234,14 @@ def build_stamp(
     #               and a tree without one is damage to them.
     # Release artifacts pin a tag. Commit builds never enter an update channel.
     variant = os.environ.get("HERMES_DESKTOP_VARIANT", "").strip()
-    if variant not in ("", "bootstrap", "bundled", "light", "store", "runtime"):
+    if variant not in ("", "bootstrap", "bundled", "light", "store", "runtime", "mod"):
         raise SystemExit(
             f"write_install_stamp: unknown HERMES_DESKTOP_VARIANT {variant!r} "
-            "(expected unset, 'bootstrap', 'bundled', 'light', 'store', or 'runtime')"
+            "(expected unset, 'bootstrap', 'bundled', 'light', 'store', 'runtime', or 'mod')"
         )
-    payload = "bundled" if variant == "store" else (variant or "bootstrap")
+    # A 'mod' fork build carries no runtime of its own — it bootstraps against
+    # the installed one, exactly like the default source build.
+    payload = "bundled" if variant == "store" else ("bootstrap" if variant == "mod" else (variant or "bootstrap"))
     tag = os.environ.get("HERMES_PAYLOAD_TAG") or None
 
     _stable_tag = re.compile(r"^v(0|[1-9]\d{0,2})\.\d+\.\d+$")
