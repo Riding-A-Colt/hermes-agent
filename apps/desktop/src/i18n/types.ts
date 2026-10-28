@@ -1009,6 +1009,7 @@ catalog: CatalogTranslations
       voiceChainSpeak: string
       voiceChainSpeakSummary: string
       voiceChainSpeakFull: string
+      voiceChainMaxChars: string
       voiceChainSpeakHint: (chars: number) => string
       voiceChainRemove: string
       showOptions: string

@@ -7,7 +7,7 @@ import { playSpeechText } from '@/lib/voice-playback'
 import { ownsAmbientCue } from '@/store/ambient'
 import { notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
-import { $autoSpeakReplies, $speechCharLimit } from '@/store/voice-prefs'
+import { $autoSpeakReplies, currentSpeechLimit } from '@/store/voice-prefs'
 
 import { useComposerScope } from '../scope'
 
@@ -131,7 +131,7 @@ export function useAutoSpeakReplies({
         }
 
         // 摘要方案（付费 API 音色默认）：只念开头一小段，长文留在屏幕上。
-        const budget = $speechCharLimit.get()
+        const budget = currentSpeechLimit()
         const spokenText = budget > 0 ? capSpeechText(reply.text, budget) : reply.text
 
         void playSpeechText(spokenText, {

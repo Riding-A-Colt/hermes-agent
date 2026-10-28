@@ -15,7 +15,7 @@ import { clearVoiceClientConfigCache } from '@/lib/voice-client-direct'
 import { readVoiceChain, schemeSpeak, schemeSwitchPatch, speechLimitForScheme } from '@/lib/voice-chain'
 import { notifyError } from '@/store/notifications'
 import { $voiceLiveStatus, selectedVoiceChatMode, setVoiceChatMode } from '@/store/voice-live'
-import { $speechCharLimit } from '@/store/voice-prefs'
+import { setSpeechCharLimit } from '@/store/voice-prefs'
 
 /**
  * Which engine the next voice conversation mounts: the chained
@@ -96,7 +96,7 @@ export function VoiceChainRows({ disabled }: { disabled: boolean }) {
   const choose = (schemeId: string) => {
     triggerHaptic('open')
     // 下一句就按新方案播报，不等 config 重新拉一遍。
-    $speechCharLimit.set(speechLimitForScheme(chain, schemeId))
+    setSpeechCharLimit(speechLimitForScheme(chain, schemeId))
 
     void saveHermesConfigRecord(schemeSwitchPatch(chain, schemeId))
       .then(() => {

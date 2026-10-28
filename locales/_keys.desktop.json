@@ -3143,6 +3143,7 @@
     "settings.config.voiceChainAdd",
     "settings.config.voiceChainDesc",
     "settings.config.voiceChainLabel",
+    "settings.config.voiceChainMaxChars",
     "settings.config.voiceChainRemove",
     "settings.config.voiceChainSpeak",
     "settings.config.voiceChainSpeakFull",

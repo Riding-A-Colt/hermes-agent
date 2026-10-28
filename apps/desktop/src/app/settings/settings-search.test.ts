@@ -37,6 +37,9 @@ describe('settings search index', () => {
 
     const config = {
       display: { personality: 'default' },
+      // chained mode hides the bare provider rows (the voice pairing owns that
+      // pair), so pin gpt-live here to keep testing the provider row path.
+      voice: { voice_chat_mode: 'gpt-live' },
       tts: { provider: 'edge', edge: { voice: '' }, openai: { voice: '' } }
     } as unknown as HermesConfigRecord
 
@@ -44,6 +47,7 @@ describe('settings search index', () => {
 
     expect(entries.map(entry => entry.id)).toEqual([
       'config-field:display.personality',
+      'config-field:voice.voice_chat_mode',
       'config-field:tts.provider',
       'config-field:tts.edge.voice'
     ])

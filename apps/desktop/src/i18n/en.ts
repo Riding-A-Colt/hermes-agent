@@ -1205,6 +1205,7 @@ export const en: Translations = {
       voiceChainSpeak: 'Read aloud',
       voiceChainSpeakSummary: 'Summary',
       voiceChainSpeakFull: 'Full text',
+      voiceChainMaxChars: 'Summary length',
       voiceChainSpeakHint: (chars: number) =>
         `Summary speaks the first ~${chars} characters and stops at a sentence boundary. Paid API voices default to summary, local voices to full text.`,
       voiceChainRemove: 'Remove pairing',

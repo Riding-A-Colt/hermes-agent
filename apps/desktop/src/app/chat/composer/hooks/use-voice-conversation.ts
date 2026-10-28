@@ -22,8 +22,8 @@ import {
   $autoSpeakReplies,
   $bargeInEnabled,
   $bargeInThresholdMultiplier,
-  $speechCharLimit,
-  $voiceSilenceMs
+  $voiceSilenceMs,
+  currentSpeechLimit
 } from '@/store/voice-prefs'
 
 import { useComposerScope } from '../scope'
@@ -689,7 +689,7 @@ export function useVoiceConversation({
 
       if (response && response.id === responseId) {
         // 摘要方案：只把开头一小段喂进语音会话，剩下的正文留在屏幕上。
-        const budget = $speechCharLimit.get()
+        const budget = currentSpeechLimit()
         const speakable = budget > 0 ? capSpeechText(response.text, budget) : response.text
         const capped = budget > 0 && response.text.length > speakable.length
 
@@ -863,7 +863,7 @@ export function useVoiceConversation({
         }
 
         // 摘要方案：非流式回退路径同样只念开头一小段。
-        const budget = $speechCharLimit.get()
+        const budget = currentSpeechLimit()
         const speakable = budget > 0 ? capSpeechText(response.text, budget) : response.text
 
         if (speakable.length > sourceLength) {

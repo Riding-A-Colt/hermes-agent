@@ -1,5 +1,11 @@
 import { atom } from 'nanostores'
 
+import { queryClient } from '@/lib/query-client'
+
+// Settings 页那份配置记录的查询键前缀（app/hooks/use-config-record 的
+// HERMES_CONFIG_KEY）。这里只读不订阅，所以直接写死前缀，免得把设置页整套
+// 依赖（hermes / profile store）拉进每个 import voice-prefs 的地方。
+const CONFIG_QUERY_PREFIX = ['hermes-config-record'] as const
 import { persistBoolean, readKey, storedBoolean } from '@/lib/storage'
 import { speechLimitFor } from '@/lib/voice-chain'
 
@@ -177,6 +183,46 @@ export async function setAutoSpeakReplies(enabled: boolean): Promise<void> {
 // 设置页的 config 缓存，也不该为了一句播报多打一次 HTTP。
 export const $speechCharLimit = atom<number>(0)
 
+/** 本会话里用户亲手选过方案 / 改过字数后，配置读不再覆盖它。
+ *  否则一次「先发请求、后落 PUT」的慢读会把刚选的「全文」覆盖回摘要字数。 */
+let budgetChosenLocally = false
+
 export function applySpeechCharLimitFromConfig(config: unknown) {
+  if (budgetChosenLocally) {
+    return
+  }
+
   $speechCharLimit.set(speechLimitFor(config))
+}
+
+/** 用户在设置页或语音菜单里做的选择：立即生效，并且不再被配置读覆盖。 */
+export function setSpeechCharLimit(chars: number) {
+  budgetChosenLocally = true
+  $speechCharLimit.set(chars)
+}
+
+/**
+ * The budget as it stands RIGHT NOW, for a code path that just needs a number.
+ *
+ * 先读设置页共用的配置查询缓存（用户刚下的选择会立刻写进去），再退回 atom。
+ * 原来只靠 use-hermes-config 刷新一次的 atom：那次 /api/config 的读可能比
+ * 用户刚做的切换更旧（先发请求、后落 PUT），于是「全文」方案还按 50 字截，
+ * 只念了第一句。
+ */
+export function currentSpeechLimit(): number {
+  if (budgetChosenLocally) {
+    return $speechCharLimit.get()
+  }
+
+  try {
+    for (const [, record] of queryClient.getQueriesData({ queryKey: CONFIG_QUERY_PREFIX })) {
+      if (record) {
+        return speechLimitFor(record)
+      }
+    }
+  } catch {
+    // no query client in this surface — fall through to the atom
+  }
+
+  return $speechCharLimit.get()
 }

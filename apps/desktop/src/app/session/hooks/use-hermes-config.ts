@@ -171,7 +171,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         applyVoiceStopPhraseFromConfig(config, defaults)
         applyBargeInEnabledFromConfig(config)
         applyBargeInThresholdFromConfig(config)
-        // chained 的摘要播报预算：选中「摘要」方案时只念开头一小段。
+        // 摘要播报预算：启动/换 profile 时跟配置走；用户本会话选过就不再覆盖。
         applySpeechCharLimitFromConfig(config)
         applyThinkingSoundFromConfig(config)
         applyVoiceSilenceMsFromConfig(config, defaults)

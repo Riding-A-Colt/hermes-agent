@@ -1256,6 +1256,7 @@ export const zhOverrides = {
       voiceChainSpeak: '播报',
       voiceChainSpeakSummary: '摘要',
       voiceChainSpeakFull: '全文',
+      voiceChainMaxChars: '摘要字数',
       voiceChainSpeakHint: (chars: number) =>
         `摘要只念开头约 ${chars} 字，到句末就停。付费 API 音色默认摘要，本地音色默认全文。`,
       voiceChainRemove: '删除搭配',

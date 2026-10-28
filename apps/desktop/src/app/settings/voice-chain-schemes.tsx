@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -19,7 +19,7 @@ import {
   type VoiceChainSpeak,
   type VoiceChainState
 } from '@/lib/voice-chain'
-import { $speechCharLimit } from '@/store/voice-prefs'
+import { setSpeechCharLimit } from '@/store/voice-prefs'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { getNested, setConfigField } from './helpers'
@@ -80,6 +80,13 @@ export function VoiceChainSchemes({
     }
   }, [schemaFields, state.schemes])
 
+  // 摘要字数用草稿值：边打字边落盘会把「9」当成上限写进去。
+  const [maxCharsDraft, setMaxCharsDraft] = useState(String(state.speakMaxChars))
+
+  useEffect(() => {
+    setMaxCharsDraft(String(state.speakMaxChars))
+  }, [state.speakMaxChars])
+
   const write = (next: VoiceChainState, switchPair: boolean) => {
     let updated = setConfigField(config, VOICE_CHAIN_KEY, voiceChainBlock(next))
 
@@ -89,9 +96,22 @@ export function VoiceChainSchemes({
     }
 
     // 播报预算立即跟随：下一次开口就按新的「摘要 / 全文」来。
-    $speechCharLimit.set(speechLimitForScheme(next, next.active))
+    setSpeechCharLimit(speechLimitForScheme(next, next.active))
 
     onChange(updated)
+  }
+
+  const commitMaxChars = () => {
+    const next = Math.round(Number(maxCharsDraft))
+
+    if (!Number.isFinite(next) || next < 10) {
+      setMaxCharsDraft(String(state.speakMaxChars))
+
+      return
+    }
+
+    setMaxCharsDraft(String(next))
+    write({ ...state, speakMaxChars: next }, false)
   }
 
   const updateScheme = (id: string, patch: Partial<VoiceChainScheme>) => {
@@ -230,10 +250,29 @@ export function VoiceChainSchemes({
         })}
       </div>
 
-      <div className="flex items-center justify-between gap-2">
-        <Button className="h-7 px-2 text-xs" onClick={addScheme} size="sm" type="button" variant="ghost">
-          + {c.voiceChainAdd}
-        </Button>
+      <div className="grid gap-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <Button className="h-7 px-2 text-xs" onClick={addScheme} size="sm" type="button" variant="ghost">
+            + {c.voiceChainAdd}
+          </Button>
+          <label className="text-muted-foreground flex items-center gap-1.5 text-xs">
+            {c.voiceChainMaxChars}
+            <Input
+              aria-label={c.voiceChainMaxChars}
+              className="h-7 w-16 text-xs"
+              min={10}
+              onBlur={commitMaxChars}
+              onChange={event => setMaxCharsDraft(event.target.value)}
+              onKeyDown={event => {
+                if (event.key === 'Enter') {
+                  commitMaxChars()
+                }
+              }}
+              type="number"
+              value={maxCharsDraft}
+            />
+          </label>
+        </div>
         <p className="text-muted-foreground text-right text-xs">{c.voiceChainSpeakHint(state.speakMaxChars)}</p>
       </div>
     </div>

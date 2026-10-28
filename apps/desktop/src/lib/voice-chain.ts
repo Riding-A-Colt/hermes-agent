@@ -29,7 +29,7 @@ export interface VoiceChainState {
   speakMaxChars: number
 }
 
-export const DEFAULT_SPEAK_MAX_CHARS = 50
+export const DEFAULT_SPEAK_MAX_CHARS = 90
 
 /** Config path for the whole chain block. */
 export const VOICE_CHAIN_KEY = 'voice.chained'
