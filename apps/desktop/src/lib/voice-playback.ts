@@ -550,6 +550,16 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
         send({ text })
       }
     },
+    // A sealed bubble can be shorter than the server's sentence floor ("2。"):
+    // without this the tail sits in the server's chunker with nothing to end
+    // it, and a relay provider never synthesizes — the UI hangs on "preparing
+    // audio" until the user stops. The blank line is the server's paragraph
+    // boundary: it releases whatever is buffered, without ending the turn.
+    flush: () => {
+      if (!finished && !settled) {
+        send({ text: '\n\n' })
+      }
+    },
     finish: () => {
       if (!finished && !settled) {
         finished = true

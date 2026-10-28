@@ -731,6 +731,14 @@ export function useVoiceConversation({
         }
       } else if (!busyRef.current) {
         // Reply consumed/vanished while we were speaking — close out the turn.
+        // Whatever we had not handed over yet goes first: a very short reply
+        // ("2。") never reaches a sentence boundary, so dropping the buffer
+        // here is what left it silent.
+        if (pendingSpeechRef.current.trim()) {
+          session.append(`${pendingSpeechRef.current.trim()}\n\n`)
+          pendingSpeechRef.current = ''
+        }
+
         session.finish()
       }
     },
