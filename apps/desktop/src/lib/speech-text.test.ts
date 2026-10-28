@@ -248,6 +248,15 @@ describe('cutSentences', () => {
     expect(rest).toBe('')
   })
 
+  it('splits CJK sentences that have no space after the terminator', () => {
+    // 中文回复里「。」后面不跟空格——旧的 \`\s+\` 规则因此一句都切不出来，
+    // 整条回复被压到结束才合成，非流式提供方（asuka）看着就像卡住。
+    const { sentences, rest } = cutSentences('这是第一句完整的回复内容，长度足够超过最小门槛。第二句还没结束', false)
+
+    expect(sentences).toEqual(['这是第一句完整的回复内容，长度足够超过最小门槛。'])
+    expect(rest).toBe('第二句还没结束')
+  })
+
   it('handles CJK terminators', () => {
     const { sentences } = cutSentences(
       '这是一个完整的中文句子，它的长度足够超过最小句子门槛，所以会被切分出来。 下一句',

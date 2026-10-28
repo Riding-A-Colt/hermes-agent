@@ -127,11 +127,15 @@ it('speaks a sealed narration while busy and keeps the session open for the fina
   await act(async () => {
     await vi.advanceTimersByTimeAsync(300)
   })
-  expect(inputs).toEqual([])
+  // A complete sentence is spoken as soon as it lands — no waiting for the
+  // bubble to seal (that wait is what made CJK replies sit silent until the
+  // whole turn ended).
+  expect(inputs).toEqual([narration])
   messages[0].pending = false
   await act(async () => {
     await vi.advanceTimersByTimeAsync(300)
   })
+  // Sealing the bubble must not re-speak the same sentence.
   expect(inputs).toEqual([narration])
   expect(TestAudio.instances[0].play).toHaveBeenCalledOnce()
   await act(async () => {

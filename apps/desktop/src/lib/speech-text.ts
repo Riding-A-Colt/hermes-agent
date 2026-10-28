@@ -248,7 +248,9 @@ function normalizeLineBreaks(text: string): string {
 // the incomplete tail, flush everything on finish.
 // ---------------------------------------------------------------------------
 
-const SENTENCE_CUT_RE = /[.!?…。！？]+["'”’)\]]*\s+/g
+// 句末切分：CJK 的 。！？；… 本身就是断句（中文不跟空格），ASCII 的 .!?
+// 仍要求后面是空白或行尾——不然 "1.5"、"v2.0" 会被切成两段。
+const SENTENCE_CUT_RE = /(?:[。！？；…]+["'”’)\]]*)|(?:[.!?]+["'”’)\]]*(?=\s|$))/g
 const MIN_SENTENCE_CHARS = 24
 
 export function cutSentences(
@@ -276,6 +278,11 @@ export function cutSentences(
     if (candidate.length >= minChars) {
       sentences.push(candidate)
       start = end
+
+      // ASCII 终止符后面那个空格属于前一句的边界，别让它留在 rest 开头。
+      while (start < buffer.length && /\s/.test(buffer[start])) {
+        start += 1
+      }
     }
 
     match = SENTENCE_CUT_RE.exec(buffer)

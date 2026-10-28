@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { type ResolvedOwner, resolveOwnerNow } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { capSpeechText, IncrementalSpeechSentenceBuffer } from '@/lib/speech-text'
+import { capSpeechText, cutSentences, IncrementalSpeechSentenceBuffer } from '@/lib/speech-text'
 import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
 import { startThinkingSound, stopThinkingSound } from '@/lib/thinking-sound'
 import { monitorSpeechDuringPlayback } from '@/lib/voice-barge-in'
@@ -121,6 +121,8 @@ export function useVoiceConversation({
   const conversationRef = useRef<Conversation | null>(null)
   const responseIdRef = useRef<string | null>(null)
   const spokenSourceLengthRef = useRef(0)
+  // 已经拿到、还没送进语音会话的回复原文（按句送，见 feedSpeechSession）。
+  const pendingSpeechRef = useRef('')
   const speechSessionRef = useRef<null | SpeechStreamSession>(null)
   const stopBargeMonitorRef = useRef<(() => void) | null>(null)
   const bargeCapturePendingRef = useRef(false)
@@ -221,6 +223,7 @@ export function useVoiceConversation({
     speechSessionRef.current = null
     responseIdRef.current = null
     spokenSourceLengthRef.current = 0
+    pendingSpeechRef.current = ''
   }
 
   const handleTurn = useCallback(
@@ -445,6 +448,7 @@ export function useVoiceConversation({
         speechSessionRef.current = null
         responseIdRef.current = null
         spokenSourceLengthRef.current = 0
+        pendingSpeechRef.current = ''
         setStatus('listening')
 
         return
@@ -687,13 +691,36 @@ export function useVoiceConversation({
         // 摘要方案：只把开头一小段喂进语音会话，剩下的正文留在屏幕上。
         const budget = $speechCharLimit.get()
         const speakable = budget > 0 ? capSpeechText(response.text, budget) : response.text
+        const capped = budget > 0 && response.text.length > speakable.length
 
         if (speakable.length > spokenSourceLengthRef.current) {
-          session.append(speakable.slice(spokenSourceLengthRef.current))
+          pendingSpeechRef.current += speakable.slice(spokenSourceLengthRef.current)
           spokenSourceLengthRef.current = speakable.length
         }
 
+        // 服务端只按「ASCII 句号 + 空格」切句，中文回复永远凑不出一句，会一直压到
+        // 整条回复结束才合成——换成 asuka 这类非流式提供方时看着就像卡死在这儿。
+        // 客户端先按句切开，每句补一个空行：服务端把空行当段落边界，收到即可合成，
+        // 第一句的声音不用等全文。
+        const { sentences, rest } = cutSentences(pendingSpeechRef.current, false)
+        pendingSpeechRef.current = rest
+
+        for (const sentence of sentences) {
+          session.append(`${sentence.trim()}\n\n`)
+        }
+
+        if (capped && pendingSpeechRef.current.trim()) {
+          // 预算用完了：剩下的尾巴现在就送出去，不再等这条回复收尾。
+          session.append(`${pendingSpeechRef.current.trim()}\n\n`)
+          pendingSpeechRef.current = ''
+        }
+
         if (!response.pending) {
+          if (pendingSpeechRef.current.trim()) {
+            session.append(`${pendingSpeechRef.current.trim()}\n\n`)
+            pendingSpeechRef.current = ''
+          }
+
           // A sealed interim is a committed boundary even while its tool runs.
           // Keep the session open for the next bubble, but speak this tail now.
           if (busyRef.current) {
@@ -836,6 +863,11 @@ export function useVoiceConversation({
           sourceLength = speakable.length
         }
 
+        if (budget > 0 && response.text.length > speakable.length) {
+          // 预算用完了：把还压在句子缓冲里的尾巴立刻说出来。
+          speechQueue.push(...sentenceBuffer.flush())
+        }
+
         if (!response.pending && !responseFinished) {
           // A sealed interim bubble while a tool runs: speak its trimmed last
           // sentence now (mirrors feedSpeechSession's session.flush) instead
@@ -871,6 +903,7 @@ export function useVoiceConversation({
 
       responseIdRef.current = responseId
       spokenSourceLengthRef.current = 0
+      pendingSpeechRef.current = ''
       setStatus('speaking')
 
       // VAD barge-in: the user talking over the reply cuts playback, drops
