@@ -6,6 +6,7 @@ import { getAudioContext } from '@/lib/audio-context'
 import { ownsAmbientCue } from '@/store/ambient'
 import {
   $completionSoundVariantId,
+  $completionSoundVolume,
   NO_COMPLETION_SOUND_VARIANT_ID,
   resolveCompletionSoundVariantId
 } from '@/store/completion-sound'
@@ -404,6 +405,14 @@ function playVariant(variantId: number) {
     return
   }
 
+  // User-set multiplier on the stock master gain. 0 is a hard mute that still
+  // leaves the preset selectable (mirrors the "None" variant's behaviour).
+  const volume = $completionSoundVolume.get()
+
+  if (volume <= 0) {
+    return
+  }
+
   const ac = getAudioContext()
 
   if (!ac) {
@@ -416,7 +425,9 @@ function playVariant(variantId: number) {
   tone.type = 'lowpass'
   tone.frequency.setValueAtTime(3800, ac.currentTime)
   tone.Q.setValueAtTime(0.32, ac.currentTime)
-  master.gain.setValueAtTime(0.48, ac.currentTime)
+  // 0.48 is the level the presets were tuned against; volume scales it, and the
+  // presets peak well under 1.0 so 200% still lands below the clip ceiling.
+  master.gain.setValueAtTime(Math.min(1, 0.48 * volume), ac.currentTime)
   master.connect(tone)
 
   const dry = ac.createGain()

@@ -18,5 +18,7 @@ export interface NotificationSettingsTranslations {
   muteSoundsDesc: string
   completionSoundTitle: string
   completionSoundDesc: string
+  completionSoundVolumeTitle: string
+  completionSoundVolumeDesc: string
   completionSoundPreview: string
 }

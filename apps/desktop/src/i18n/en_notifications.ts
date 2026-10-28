@@ -45,5 +45,7 @@ export const enNotifications = {
     'Silences automatic completion, wake-word and thinking cues, haptic feedback, and OS notification sounds. Sound previews and spoken replies still play.',
   completionSoundTitle: 'Completion Sound',
   completionSoundDesc: 'Plays when an agent turn finishes. Pick a preset and preview it here.',
+  completionSoundVolumeTitle: 'Completion sound volume',
+  completionSoundVolumeDesc: 'Scales the turn-end cue only. 100% is the stock level; 200% is about twice as loud.',
   completionSoundPreview: 'Preview'
 }

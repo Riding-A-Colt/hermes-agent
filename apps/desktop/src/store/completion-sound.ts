@@ -39,3 +39,33 @@ persistStore(
 export function setCompletionSoundVariantId(variantId: number) {
   $completionSoundVariantId.set(resolveCompletionSoundVariantId(variantId))
 }
+
+// ── Volume ───────────────────────────────────────────────────────────────────
+// Multiplier on the stock master gain. 1 = the level shipped before this
+// setting existed; 2 = four times the power (+12 dB), still under the clip
+// ceiling because every preset peaks near 0.07 before the master stage.
+const VOLUME_KEY = 'hermes.desktop.completionSoundVolume'
+
+export const MIN_COMPLETION_SOUND_VOLUME = 0
+export const MAX_COMPLETION_SOUND_VOLUME = 2
+export const DEFAULT_COMPLETION_SOUND_VOLUME = 1
+
+export function resolveCompletionSoundVolume(volume: number): number {
+  return Number.isFinite(volume)
+    ? Math.min(MAX_COMPLETION_SOUND_VOLUME, Math.max(MIN_COMPLETION_SOUND_VOLUME, volume))
+    : DEFAULT_COMPLETION_SOUND_VOLUME
+}
+
+function loadVolume(): number {
+  const stored = storedString(VOLUME_KEY)
+
+  return stored ? resolveCompletionSoundVolume(Number.parseFloat(stored)) : DEFAULT_COMPLETION_SOUND_VOLUME
+}
+
+export const $completionSoundVolume = atom(loadVolume())
+
+$completionSoundVolume.subscribe(volume => persistString(VOLUME_KEY, String(volume)))
+
+export function setCompletionSoundVolume(volume: number) {
+  $completionSoundVolume.set(resolveCompletionSoundVolume(volume))
+}

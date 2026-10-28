@@ -1,14 +1,21 @@
 import { useStore } from '@nanostores/react'
-import type { ReactNode } from 'react'
+import { type ReactNode, useEffect, useRef } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Slider } from '@/components/ui/slider'
 import { useI18n } from '@/i18n'
 import { COMPLETION_SOUND_VARIANTS, previewCompletionSound } from '@/lib/completion-sound'
 import { triggerHaptic } from '@/lib/haptics'
 import { Bell, Play } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $completionSoundVariantId, setCompletionSoundVariantId } from '@/store/completion-sound'
+import {
+  $completionSoundVariantId,
+  $completionSoundVolume,
+  MAX_COMPLETION_SOUND_VOLUME,
+  setCompletionSoundVariantId,
+  setCompletionSoundVolume
+} from '@/store/completion-sound'
 import { $hapticsMuted, setHapticsMuted } from '@/store/haptics'
 import {
   $nativeNotifyPrefs,
@@ -39,9 +46,33 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
   const prefs = useStore($nativeNotifyPrefs)
   const muted = useStore($hapticsMuted)
   const completionSoundVariantId = useStore($completionSoundVariantId)
+  const completionSoundVolume = useStore($completionSoundVolume)
   const copy = t.settings.notifications
   const showAlerts = subpage === undefined || subpage === 'alerts'
   const showSounds = subpage === undefined || subpage === 'sounds'
+  const previewTimer = useRef<number | null>(null)
+
+  useEffect(
+    () => () => {
+      if (previewTimer.current !== null) {
+        window.clearTimeout(previewTimer.current)
+      }
+    },
+    []
+  )
+
+  // Dragging the slider fires on every step; audition the level once the hand
+  // stops so the preview never machine-guns the chime.
+  const previewVolumeSoon = () => {
+    if (previewTimer.current !== null) {
+      window.clearTimeout(previewTimer.current)
+    }
+
+    previewTimer.current = window.setTimeout(() => {
+      previewTimer.current = null
+      previewCompletionSound()
+    }, 160)
+  }
 
   useSettingDeepLink('notifications', page => subpage === undefined || page === subpage)
 
@@ -133,6 +164,32 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
             description={copy.completionSoundDesc}
             id={settingElementId(SETTING_IDS.notifications.completionSound)}
             title={copy.completionSoundTitle}
+          />
+
+          <ListRow
+            action={
+              <div className="flex w-56 items-center gap-3">
+                <Slider
+                  aria-label={copy.completionSoundVolumeTitle}
+                  className="w-full"
+                  max={Math.round(MAX_COMPLETION_SOUND_VOLUME * 100)}
+                  min={0}
+                  onChange={event => {
+                    setCompletionSoundVolume(Number(event.target.value) / 100)
+                    previewVolumeSoon()
+                  }}
+                  step={5}
+                  value={Math.round(completionSoundVolume * 100)}
+                />
+
+                <span className="w-10 shrink-0 text-right tabular-nums text-(--ui-text-tertiary)">
+                  {Math.round(completionSoundVolume * 100)}%
+                </span>
+              </div>
+            }
+            description={copy.completionSoundVolumeDesc}
+            id={settingElementId(SETTING_IDS.notifications.completionSoundVolume)}
+            title={copy.completionSoundVolumeTitle}
           />
         </>
       )}
