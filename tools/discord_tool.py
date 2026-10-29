@@ -10,6 +10,7 @@ import functools
 import hashlib
 import json
 import logging
+import os
 import threading
 import time
 import urllib.error
@@ -52,6 +53,57 @@ def _get_bot_token() -> Optional[str]:
     return (get_secret("DISCORD_BOT_TOKEN", "") or "").strip() or None
 
 
+def _discord_proxy_url() -> Optional[str]:
+    """``DISCORD_PROXY`` for the REST tool, or None when unset.
+
+    discord.com is unreachable from some networks (mainland China blocks it), and the
+    gateway's aiohttp sessions already honor ``DISCORD_PROXY`` via ``resolve_proxy_url``
+    — but a bare ``urllib`` opener does not, so this tool timed out even though the bot
+    was connected. Read the same per-platform variable here (scope-aware, then process
+    env) so both paths agree. Only the explicit per-platform var is used: the generic
+    HTTP(S)_PROXY vars belong to arbitrary shell traffic and must not be forced on.
+    """
+    try:
+        value = (get_secret("DISCORD_PROXY", "") or "").strip()
+    except Exception:  # fail-closed secret scope under a multiplexing gateway
+        value = ""
+    if not value:
+        value = (os.environ.get("DISCORD_PROXY") or "").strip()
+    return value or None
+
+
+# One opener per proxy value; build_opener() is cheap but this keeps the hot path clean.
+_discord_openers: Dict[str, Any] = {}
+_discord_openers_lock = threading.Lock()
+
+
+def _discord_opener(proxy: str):
+    with _discord_openers_lock:
+        opener = _discord_openers.get(proxy)
+        if opener is None:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+            _discord_openers[proxy] = opener
+        return opener
+
+
+def _open_discord_request(req: urllib.request.Request, timeout: int):
+    """Open *req*, through ``DISCORD_PROXY`` when one is configured.
+
+    With no proxy set this is the plain module-level ``urllib.request.urlopen`` (the
+    upstream call site, kept patchable as-is); the proxied branch builds an opener.
+    """
+    proxy = _discord_proxy_url()
+    if proxy:
+        if proxy.lower().startswith("socks"):
+            logger.warning(
+                "DISCORD_PROXY=%s is a SOCKS proxy; urllib cannot use it — the Discord tool "
+                "will connect directly. Use an HTTP proxy for tool calls.", proxy)
+        else:
+            return _discord_opener(proxy).open(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def _discord_request(
     method: str, path: str, token: str, params: Optional[dict[str, str]] = None,
     body: Optional[dict[str, Any]] = None, timeout: int = 15) -> Any:
@@ -65,7 +117,7 @@ def _discord_request(
             "Authorization": f"Bot {token}", "Content-Type": "application/json",
             "User-Agent": "Hermes-Agent (https://github.com/NousResearch/hermes-agent)"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _open_discord_request(req, timeout) as resp:
             if resp.status == 204:
                 return None
             body = _read_limited_response_body(resp, _DISCORD_RESPONSE_BODY_MAX_BYTES, label="response body")
