@@ -7,7 +7,7 @@ import { queryClient } from '@/lib/query-client'
 // 依赖（hermes / profile store）拉进每个 import voice-prefs 的地方。
 const CONFIG_QUERY_PREFIX = ['hermes-config-record'] as const
 import { persistBoolean, readKey, storedBoolean } from '@/lib/storage'
-import { speechLimitFor } from '@/lib/voice-chain'
+import { speechLimitFor, ttsStreamsSpeech } from '@/lib/voice-chain'
 
 // Desktop read-aloud is local; voice.auto_tts belongs to the messaging gateway.
 const AUTO_SPEAK_KEY = 'hermes.desktop.autoSpeakReplies'
@@ -187,7 +187,12 @@ export const $speechCharLimit = atom<number>(0)
  *  否则一次「先发请求、后落 PUT」的慢读会把刚选的「全文」覆盖回摘要字数。 */
 let budgetChosenLocally = false
 
+/** 当前音色是否边生成边念（provider 里 `speech_stream: true`）。 */
+export const $ttsStreamsSpeech = atom<boolean>(false)
+
 export function applySpeechCharLimitFromConfig(config: unknown) {
+  $ttsStreamsSpeech.set(ttsStreamsSpeech(config))
+
   if (budgetChosenLocally) {
     return
   }
@@ -209,6 +214,22 @@ export function setSpeechCharLimit(chars: number) {
  * 用户刚做的切换更旧（先发请求、后落 PUT），于是「全文」方案还按 50 字截，
  * 只念了第一句。
  */
+/** 播报链路当下该走哪条：流式（本地引擎）还是整条一次（云端 API）。
+ *  和 currentSpeechLimit 一样先读配置查询缓存，刚切换的 provider 立刻生效。 */
+export function currentTtsStreamsSpeech(): boolean {
+  try {
+    for (const [, record] of queryClient.getQueriesData({ queryKey: CONFIG_QUERY_PREFIX })) {
+      if (record) {
+        return ttsStreamsSpeech(record)
+      }
+    }
+  } catch {
+    // no query client in this surface — fall through to the atom
+  }
+
+  return $ttsStreamsSpeech.get()
+}
+
 export function currentSpeechLimit(): number {
   if (budgetChosenLocally) {
     return $speechCharLimit.get()

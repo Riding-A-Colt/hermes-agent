@@ -2,7 +2,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $voicePlayback } from '@/store/voice-playback'
-import { $autoSpeakReplies } from '@/store/voice-prefs'
+import { $autoSpeakReplies, $ttsStreamsSpeech } from '@/store/voice-prefs'
 
 import { useVoiceConversation } from './use-voice-conversation'
 
@@ -33,7 +33,13 @@ const mocks = vi.hoisted(() => {
     return Promise.resolve(true)
   })
 
-  const startSpeechStream = vi.fn(async () => null)
+  const chainAppends: string[] = []
+  const startSpeechChain = vi.fn(() => ({
+    append: (text: string) => chainAppends.push(text),
+    done: new Promise<'done' | 'fallback'>(() => undefined),
+    finish: vi.fn(),
+    flush: vi.fn()
+  }))
 
   const handle = {
     cancel: vi.fn(),
@@ -57,7 +63,8 @@ const mocks = vi.hoisted(() => {
     },
     handle,
     playSpeechText,
-    startSpeechStream,
+    chainAppends,
+    startSpeechChain,
     resetSpeechMocks() {
       deferPlayback = false
       resolvePlayback = null
@@ -80,7 +87,7 @@ vi.mock('@/lib/voice-barge-in', () => ({
 vi.mock('@/lib/voice-playback', () => ({
   markVoicePlaybackInterrupted: vi.fn(),
   playSpeechText: mocks.playSpeechText,
-  startSpeechStream: mocks.startSpeechStream,
+  startSpeechChain: mocks.startSpeechChain,
   stopVoicePlayback: mocks.stopVoicePlayback,
   takeVoicePlaybackInterrupted: vi.fn(() => true)
 }))
@@ -242,6 +249,24 @@ describe('useVoiceConversation playback', () => {
     await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
     expect(mocks.playSpeechText).toHaveBeenCalledTimes(1)
     await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+  })
+
+  it('feeds sentences into the speech chain for a streaming voice', async () => {
+    // kokoro 这种声明了 speech_stream 的音色：出字就念，但状态只准备一次。
+    $ttsStreamsSpeech.set(true)
+
+    try {
+      const { hook, seal } = renderConversation('reply-local', '本地引擎回复。')
+
+      await beginReply(hook)
+      seal('本地引擎回复。')
+
+      await waitFor(() => expect(mocks.startSpeechChain).toHaveBeenCalled())
+      await waitFor(() => expect(mocks.chainAppends.join('')).toContain('本地引擎回复'))
+      expect(mocks.playSpeechText).not.toHaveBeenCalled()
+    } finally {
+      $ttsStreamsSpeech.set(false)
+    }
   })
 
   it('stops waiting for a seal once the hook unmounts', async () => {

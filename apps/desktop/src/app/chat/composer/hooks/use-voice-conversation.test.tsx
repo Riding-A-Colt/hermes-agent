@@ -31,11 +31,18 @@ const stopVoicePlayback = vi.fn()
 const takeVoicePlaybackInterrupted = vi.fn(() => true)
 
 const playSpeechTextMock = vi.fn(async () => true)
+const startSpeechChainMock = vi.fn(() => ({
+  append: vi.fn(),
+  done: new Promise<'done' | 'fallback'>(() => undefined),
+  finish: vi.fn(),
+  flush: vi.fn()
+}))
 const startSpeechStreamMock = vi.fn(async () => null)
 
 vi.mock('@/lib/voice-playback', () => ({
   markVoicePlaybackInterrupted: () => markVoicePlaybackInterrupted(),
   playSpeechText: (...args: unknown[]) => playSpeechTextMock(...(args as [])),
+  startSpeechChain: (...args: unknown[]) => startSpeechChainMock(...(args as [])),
   startSpeechStream: (...args: unknown[]) => startSpeechStreamMock(...(args as [])),
   stopVoicePlayback: () => stopVoicePlayback(),
   takeVoicePlaybackInterrupted: () => takeVoicePlaybackInterrupted()

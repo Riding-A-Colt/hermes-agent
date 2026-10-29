@@ -841,6 +841,188 @@ async function startSpeechText(text: string, options: VoicePlaybackOptions): Pro
   }
 }
 
+// ---------------------------------------------------------------------------
+// 语音链：边生成边播放，但只有一次「正在准备音频」
+// ---------------------------------------------------------------------------
+//
+// 本地引擎（kokoro）最要紧的是首声早：一句话生成完就能念。但每句都走
+// playSpeechText 会把状态反复压回 preparing，界面上就会一路弹「正在准备音频」，
+// 而且句与句之间还要等一次合成。这条链把两件事解开了：
+//
+//   - 状态只在开头设一次 preparing，之后一直是 speaking；
+//   - 播第 N 句的同时预合成第 N+1 句，播完立刻接上，中间不留空档；
+//   - 队列排空之前不结束，所以回复末尾那几句不会被截掉。
+
+export interface SpeechChain {
+  append: (text: string) => void
+  done: Promise<'done' | 'fallback'>
+  finish: () => void
+  flush: () => void
+}
+
+const SPEECH_CHAIN_IDLE_MS = 80
+
+export function startSpeechChain(options: VoicePlaybackOptions): SpeechChain {
+  const ownSequence = sequence
+  const isCurrent = () => ownSequence === sequence
+
+  const queue: string[] = []
+  let closed = false
+  let finishing = false
+  let playing: HTMLAudioElement | null = null
+  let prefetched: null | { text: string; url: Promise<string> } = null
+  let started = false
+  let resolveDone: (outcome: 'done' | 'fallback') => void = () => {}
+  const done = new Promise<'done' | 'fallback'>(resolve => {
+    resolveDone = resolve
+  })
+
+  const halt = (outcome: 'done' | 'fallback') => {
+    if (closed) {
+      return
+    }
+
+    closed = true
+    queue.length = 0
+    prefetched = null
+    liveStops.delete(stop)
+    playing?.pause()
+    playing = null
+
+    if (started) {
+      setVoicePlaybackState(currentState('idle'))
+    }
+
+    resolveDone(outcome)
+  }
+
+  function stop() {
+    halt('fallback')
+  }
+
+  liveStops.add(stop)
+
+  const synthesize = (text: string) => speakText(text, options).then(response => response.data_url)
+
+  const play = (url: string) =>
+    new Promise<void>(resolve => {
+      const audio = new Audio(url)
+      playing = audio
+      currentAudio = audio
+      setVoicePlaybackState(currentState('speaking', options, audio))
+
+      let stall: number | null = null
+
+      const end = () => {
+        if (stall !== null) {
+          window.clearTimeout(stall)
+          stall = null
+        }
+
+        audio.removeEventListener('ended', end)
+        audio.removeEventListener('timeupdate', arm)
+
+        if (playing === audio) {
+          playing = null
+        }
+
+        resolve()
+      }
+
+      const arm = () => {
+        if (stall !== null) {
+          window.clearTimeout(stall)
+        }
+
+        stall = window.setTimeout(end, PLAYBACK_STALL_MS)
+      }
+
+      audio.addEventListener('ended', end, { once: true })
+      audio.addEventListener('timeupdate', arm)
+      arm()
+      void audio.play().catch(async () => {
+        try {
+          await unlockAutoplay()
+          await audio.play()
+        } catch {
+          end()
+        }
+      })
+    })
+
+  const settleIfDrained = () => {
+    if (!closed && finishing && !queue.length && !playing) {
+      halt('done')
+    }
+  }
+
+  const pump = async () => {
+    while (!closed && isCurrent()) {
+      if (!queue.length) {
+        settleIfDrained()
+
+        if (closed) {
+          return
+        }
+
+        await new Promise(resolve => window.setTimeout(resolve, SPEECH_CHAIN_IDLE_MS))
+
+        continue
+      }
+
+      const text = queue.shift() as string
+
+      try {
+        const url = prefetched?.text === text ? await prefetched.url : await synthesize(text)
+        prefetched = null
+
+        if (closed || !isCurrent()) {
+          return
+        }
+
+        // 第 N 句开播的同时合成第 N+1 句：播完就能接上。
+        if (queue.length) {
+          prefetched = { text: queue[0], url: synthesize(queue[0]) }
+          prefetched.url.catch(() => undefined)
+        }
+
+        await play(url)
+      } catch {
+        // 单句失败不拖垮整条链：跳过它继续念下一句。
+      }
+
+      settleIfDrained()
+    }
+  }
+
+  void pump()
+
+  return {
+    append(text: string) {
+      const clean = sanitizeTextForSpeech(text)
+
+      if (!clean || closed) {
+        return
+      }
+
+      if (!started) {
+        started = true
+        setVoicePlaybackState(currentState('preparing', options))
+      }
+
+      queue.push(clean)
+    },
+    done,
+    finish() {
+      finishing = true
+      settleIfDrained()
+    },
+    flush() {
+      // 本地链路没有服务端缓冲，段落边界对这里没有意义。
+    }
+  }
+}
+
 export function isVoicePlaybackActive() {
   return $voicePlayback.get().status !== 'idle'
 }

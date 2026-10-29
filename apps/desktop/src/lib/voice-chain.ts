@@ -211,3 +211,30 @@ export function speechLimitForScheme(state: VoiceChainState, schemeId: null | st
 
   return schemeSpeak(scheme) === 'summary' ? state.speakMaxChars : 0
 }
+
+/**
+ * 这个音色要不要"边生成边念"（流式）。
+ *
+ * 判定不能用 `type: command`：asuka 也是 command（外壳脚本打 MiniMax 云接口），
+ * 按类型分会让云端音色也走逐句合成。改成在 provider 块里显式声明：
+ *
+ *   tts:
+ *     providers:
+ *       kokoro:
+ *         type: command
+ *         speech_stream: true
+ *
+ * 没声明的（含所有云端音色）一律整条一次合成。
+ */
+export function ttsStreamsSpeech(config: unknown, provider?: string): boolean {
+  const name = provider || text(nested(config, ['tts', 'provider']))
+
+  if (!name) {
+    return false
+  }
+
+  const flag = nested(config, ['tts', 'providers', name, 'speech_stream'])
+  const topFlag = nested(config, ['tts', name, 'speech_stream'])
+
+  return flag === true || topFlag === true
+}
