@@ -9,7 +9,6 @@ import {
   schemeSpeak,
   schemeSwitchPatch,
   speechLimitFor,
-  ttsProviderIsCommand,
   voiceChainBlock,
   type VoiceChainScheme
 } from './voice-chain'
@@ -116,26 +115,5 @@ describe('writes', () => {
 describe('activeScheme', () => {
   it('resolves the active row', () => {
     expect(activeScheme({ active: 'b', schemes, speakMaxChars: 50 }).id).toBe('b')
-  })
-})
-
-describe('ttsProviderIsCommand', () => {
-  it('recognises a command provider declared under tts.providers', () => {
-    expect(ttsProviderIsCommand({ tts: { provider: 'kokoro', providers: { kokoro: { type: 'command' } } } })).toBe(true)
-  })
-
-  it('recognises a command provider declared at the top level', () => {
-    expect(ttsProviderIsCommand({ tts: { provider: 'asuka', asuka: { type: 'command' } } })).toBe(true)
-  })
-
-  it('treats a built-in API provider as remote', () => {
-    expect(ttsProviderIsCommand({ tts: { provider: 'openai' } })).toBe(false)
-  })
-
-  it('lets the caller name the provider explicitly', () => {
-    const record = { tts: { provider: 'openai', providers: { kokoro: { type: 'command' } } } }
-
-    expect(ttsProviderIsCommand(record, 'kokoro')).toBe(true)
-    expect(ttsProviderIsCommand(record, 'openai')).toBe(false)
   })
 })
