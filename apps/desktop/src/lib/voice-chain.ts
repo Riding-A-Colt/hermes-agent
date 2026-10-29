@@ -211,3 +211,22 @@ export function speechLimitForScheme(state: VoiceChainState, schemeId: null | st
 
   return schemeSpeak(scheme) === 'summary' ? state.speakMaxChars : 0
 }
+
+/**
+ * 当前 TTS provider 是不是本地 command 型（kokoro / asuka 这类跑在机器上的引擎）。
+ *
+ * 决定播报策略：本地引擎出字就该念——延迟按秒算、不花钱，边生成边发音体验最好；
+ * 云端 API 音色按摘要整条合成一次——按字数计费，念一整篇既贵又像在读文档。
+ */
+export function ttsProviderIsCommand(config: unknown, provider?: string): boolean {
+  const name = provider || text(nested(config, ['tts', 'provider']))
+
+  if (!name) {
+    return false
+  }
+
+  const nestedKind = text(nested(config, ['tts', 'providers', name, 'type']))
+  const topKind = text(nested(config, ['tts', name, 'type']))
+
+  return (nestedKind || topKind) === 'command'
+}
