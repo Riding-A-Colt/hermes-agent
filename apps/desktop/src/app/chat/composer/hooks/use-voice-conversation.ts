@@ -2,15 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { type ResolvedOwner, resolveOwnerNow } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { capSpeechText, cutSentences, IncrementalSpeechSentenceBuffer } from '@/lib/speech-text'
+import { capSpeechText } from '@/lib/speech-text'
 import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
 import { startThinkingSound, stopThinkingSound } from '@/lib/thinking-sound'
 import { monitorSpeechDuringPlayback } from '@/lib/voice-barge-in'
 import {
   markVoicePlaybackInterrupted,
   playSpeechText,
-  type SpeechStreamSession,
-  startSpeechStream,
   stopVoicePlayback,
   takeVoicePlaybackInterrupted
 } from '@/lib/voice-playback'
@@ -121,9 +119,6 @@ export function useVoiceConversation({
   const conversationRef = useRef<Conversation | null>(null)
   const responseIdRef = useRef<string | null>(null)
   const spokenSourceLengthRef = useRef(0)
-  // 已经拿到、还没送进语音会话的回复原文（按句送，见 feedSpeechSession）。
-  const pendingSpeechRef = useRef('')
-  const speechSessionRef = useRef<null | SpeechStreamSession>(null)
   const stopBargeMonitorRef = useRef<(() => void) | null>(null)
   const bargeCapturePendingRef = useRef(false)
   const bargedRef = useRef(false)
@@ -190,9 +185,6 @@ export function useVoiceConversation({
   // The sentence-by-sentence fallback polls the pending reply on a timer; it
   // must not outlive the session or the hook (a stray tick after unmount hits
   // a torn-down window).
-  const cancelFallbackPollRef = useRef<(() => void) | null>(null)
-
-  useEffect(() => () => cancelFallbackPollRef.current?.(), [])
 
   useEffect(
     () => () => {
@@ -214,16 +206,13 @@ export function useVoiceConversation({
   }
 
   const dropSpeechSession = () => {
-    cancelFallbackPollRef.current?.()
     stopBargeMonitorRef.current?.()
     stopBargeMonitorRef.current = null
     bargeCapturePendingRef.current = false
     bargedRef.current = false
     bargeEchoTextRef.current = ''
-    speechSessionRef.current = null
     responseIdRef.current = null
     spokenSourceLengthRef.current = 0
-    pendingSpeechRef.current = ''
   }
 
   const handleTurn = useCallback(
@@ -445,11 +434,9 @@ export function useVoiceConversation({
         // The barge monitor is still capturing the user's interruption — it
         // owns the next turn. Keep it alive and don't re-open the mic; the
         // utterance callback transcribes and submits when they go quiet.
-        speechSessionRef.current = null
-        responseIdRef.current = null
+            responseIdRef.current = null
         spokenSourceLengthRef.current = 0
-        pendingSpeechRef.current = ''
-        setStatus('listening')
+            setStatus('listening')
 
         return
       }
@@ -676,230 +663,17 @@ export function useVoiceConversation({
     return unsubscribe
   }, [])
 
-  /** Push any new reply text into the live session; finish when complete. */
-  const feedSpeechSession = useCallback(
-    (responseId: string) => {
-      const session = speechSessionRef.current
-
-      if (!session || responseIdRef.current !== responseId) {
-        return
-      }
-
-      const response = pendingResponse()
-
-      if (response && response.id === responseId) {
-        // 摘要方案：只把开头一小段喂进语音会话，剩下的正文留在屏幕上。
-        const budget = currentSpeechLimit()
-        const speakable = budget > 0 ? capSpeechText(response.text, budget) : response.text
-        const capped = budget > 0 && response.text.length > speakable.length
-
-        if (speakable.length > spokenSourceLengthRef.current) {
-          pendingSpeechRef.current += speakable.slice(spokenSourceLengthRef.current)
-          spokenSourceLengthRef.current = speakable.length
-        }
-
-        // 服务端只按「ASCII 句号 + 空格」切句，中文回复永远凑不出一句，会一直压到
-        // 整条回复结束才合成——换成 asuka 这类非流式提供方时看着就像卡死在这儿。
-        // 客户端先按句切开，每句补一个空行：服务端把空行当段落边界，收到即可合成，
-        // 第一句的声音不用等全文。
-        const { sentences, rest } = cutSentences(pendingSpeechRef.current, false)
-        pendingSpeechRef.current = rest
-
-        for (const sentence of sentences) {
-          session.append(`${sentence.trim()}\n\n`)
-        }
-
-        if (capped && pendingSpeechRef.current.trim()) {
-          // 预算用完了：剩下的尾巴现在就送出去，不再等这条回复收尾。
-          session.append(`${pendingSpeechRef.current.trim()}\n\n`)
-          pendingSpeechRef.current = ''
-        }
-
-        if (!response.pending) {
-          if (pendingSpeechRef.current.trim()) {
-            session.append(`${pendingSpeechRef.current.trim()}\n\n`)
-            pendingSpeechRef.current = ''
-          }
-
-          // A sealed interim is a committed boundary even while its tool runs.
-          // Keep the session open for the next bubble, but speak this tail now.
-          if (busyRef.current) {
-            session.flush?.()
-          } else {
-            session.finish()
-          }
-        }
-      } else if (!busyRef.current) {
-        // Reply consumed/vanished while we were speaking — close out the turn.
-        // Whatever we had not handed over yet goes first: a very short reply
-        // ("2。") never reaches a sentence boundary, so dropping the buffer
-        // here is what left it silent.
-        if (pendingSpeechRef.current.trim()) {
-          session.append(`${pendingSpeechRef.current.trim()}\n\n`)
-          pendingSpeechRef.current = ''
-        }
-
-        session.finish()
-      }
-    },
-    [pendingResponse]
-  )
-
-  /** Non-streaming providers still speak completed sentences during generation. */
-  const awaitFallbackSpeech = useCallback(
-    (responseId: string) => {
-      const sentenceBuffer = new IncrementalSpeechSentenceBuffer()
-      const speechQueue: string[] = []
-      let sourceLength = 0
-      let responseFinished = false
-      let playing = false
-      let settled = false
-      let pollTimer: number | null = null
-      let ownedSequence = $voicePlayback.get().sequence
-
-      const cancelPoll = () => {
-        settled = true
-
-        if (pollTimer !== null) {
-          window.clearTimeout(pollTimer)
-          pollTimer = null
-        }
-
-        if (cancelFallbackPollRef.current === cancelPoll) {
-          cancelFallbackPollRef.current = null
-        }
-      }
-
-      cancelFallbackPollRef.current = cancelPoll
-
-      const finishFallback = (barged: boolean, stopped = false) => {
-        if (settled) {
-          return
-        }
-
-        cancelPoll()
-        awaitingSpokenResponseRef.current = false
-        settleAfterSpeech(barged, stopped)
-      }
-
-      const playNext = () => {
-        if (settled || playing || responseIdRef.current !== responseId) {
-          return
-        }
-
-        if ($voicePlayback.get().sequence > ownedSequence) {
-          finishFallback(false, true)
-
-          return
-        }
-
-        const sentence = speechQueue.shift()
-
-        if (!sentence) {
-          if (responseFinished) {
-            finishFallback(bargedRef.current)
-          }
-
-          return
-        }
-
-        ensureBargeMonitor()
-        playing = true
-
-        // The stream path (client-direct, else WS relay) already answered
-        // `fallback` or was unavailable for this reply — POST each sentence
-        // straight to /api/audio/speak (same server TTS) instead of re-probing.
-        const playback = playSpeechText(sentence, {
-          ...ownerRef.current,
-          source: 'voice-conversation',
-          syncOnly: true
-        })
-
-        ownedSequence = $voicePlayback.get().sequence
-        speechStartSequenceRef.current = ownedSequence
-        let playbackFailed = false
-
-        void playback
-          .catch(error => {
-            playbackFailed = true
-            notifyError(error, voiceCopy.playbackFailed)
-          })
-          .finally(() => {
-            if (settled || responseIdRef.current !== responseId) {
-              return
-            }
-
-            playing = false
-
-            if (playbackFailed) {
-              finishFallback(bargedRef.current)
-
-              return
-            }
-
-            const stopped = $voicePlayback.get().sequence > ownedSequence
-
-            if (bargedRef.current || stopped) {
-              finishFallback(bargedRef.current, stopped && !bargedRef.current)
-
-              return
-            }
-
-            playNext()
-          })
-      }
-
-      const poll = () => {
-        if (settled || responseIdRef.current !== responseId) {
-          return
-        }
-
-        const response = pendingResponse()
-
-        if (!response || response.id !== responseId) {
-          finishFallback(false)
-
-          return
-        }
-
-        // 摘要方案：非流式回退路径同样只念开头一小段。
-        const budget = currentSpeechLimit()
-        const speakable = budget > 0 ? capSpeechText(response.text, budget) : response.text
-
-        if (speakable.length > sourceLength) {
-          speechQueue.push(...sentenceBuffer.append(speakable.slice(sourceLength)))
-          sourceLength = speakable.length
-        }
-
-        if (budget > 0 && response.text.length > speakable.length) {
-          // 预算用完了：把还压在句子缓冲里的尾巴立刻说出来。
-          speechQueue.push(...sentenceBuffer.flush())
-        }
-
-        if (!response.pending && !responseFinished) {
-          // A sealed interim bubble while a tool runs: speak its trimmed last
-          // sentence now (mirrors feedSpeechSession's session.flush) instead
-          // of holding it for the whole tool run. Finished only once idle.
-          speechQueue.push(...sentenceBuffer.flush())
-          responseFinished = !busyRef.current
-        }
-
-        playNext()
-
-        if (!responseFinished) {
-          pollTimer = window.setTimeout(poll, 150)
-        }
-      }
-
-      poll()
-    },
-    [ensureBargeMonitor, pendingResponse, settleAfterSpeech, voiceCopy.playbackFailed]
-  )
-
   /**
-   * Live-speak the streaming reply: one speech session per response, fed
-   * incremental text as the assistant generates it. Audio overlaps generation
-   * — no wait for the full reply, no per-sentence gaps.
+   * Speak the reply ONCE, after it is fully generated.
+   *
+   * 这条链以前是「边说边合成」：把回复按句喂进 /api/audio/speak-stream，
+   * 服务端逐句调 text_to_speech_tool。对 command 型 provider（asuka / kokoro）
+   * 那就是每句起一次脚本进程，合成串在播放后面 → 段与段之间各弹一次
+   * 「正在准备音频」，听感上像被切成好几段，长回复还会只念前半。
+   *
+   * 现在改成：等整条回复落地，一次性 POST 到 /api/audio/speak，拿回一个
+   * 完整的音频文件播一遍。一次 preparing、一段声音；全文就是全文，摘要才按
+   * speak_max_chars 截。
    */
   const openLiveSpeech = useCallback(
     (responseId: string) => {
@@ -907,82 +681,117 @@ export function useVoiceConversation({
         return
       }
 
-      const sequenceBeforeStart = $voicePlayback.get().sequence
-
       responseIdRef.current = responseId
       spokenSourceLengthRef.current = 0
-      pendingSpeechRef.current = ''
+
+      // Hold the loop in 'speaking' for the whole wait: the effect's
+      // "turn ended without a speakable reply" branch would otherwise drop the
+      // session when a short bubble vanishes before the poll sees it sealed.
       setStatus('speaking')
 
-      // VAD barge-in: the user talking over the reply cuts playback, drops
-      // the not-yet-spoken remainder, AND keeps capturing — the interruption
-      // is transcribed from its first syllable instead of losing the opening
-      // words to a mic re-open. Usually already live (armed at submit).
-      ensureBargeMonitor()
+      const current = () => responseIdRef.current === responseId
+
+      /** Wait for the turn's last bubble to seal: no half sentences spoken. */
+      const waitForSealed = (): Promise<null | string> => {
+        // The bubble can be dropped (session view rebuilt) right as the turn
+        // settles — a very short reply ("2。") would then vanish before we saw
+        // it sealed. Keep the last text we observed so it still gets spoken.
+        let lastSeen = ''
+
+        return new Promise(resolve => {
+          const tick = () => {
+            if (!current()) {
+              resolve(null)
+
+              return
+            }
+
+            const response = pendingResponse()
+
+            if (!response || response.id !== responseId) {
+              // The bubble was consumed/rewritten under us. If we already saw
+              // text, speak that; otherwise give the loop a moment to publish
+              // the durable bubble.
+              if (lastSeen) {
+                resolve(lastSeen)
+              } else {
+                window.setTimeout(() => resolve(current() ? (pendingResponse()?.text ?? null) : null), 200)
+              }
+
+              return
+            }
+
+            if (response.text.trim()) {
+              lastSeen = response.text
+            }
+
+            if (response.pending || busyRef.current) {
+              window.setTimeout(tick, 150)
+
+              return
+            }
+
+            resolve(response.text)
+          }
+
+          tick()
+        })
+      }
 
       void (async () => {
-        const session = await startSpeechStream({ ...ownerRef.current, source: 'voice-conversation' })
+        const text = await waitForSealed()
 
-        // The session may resolve after the loop moved on (barge, disable).
-        if (responseIdRef.current !== responseId) {
-          if (session) {
-            stopVoicePlayback()
-          }
+        if (!current()) {
+          return
+        }
+
+        if (!text || !text.trim()) {
+          awaitingSpokenResponseRef.current = false
+          settleAfterSpeech(false)
 
           return
         }
 
-        if (!session) {
-          // Stream discovery can also fail after an explicit Stop landed
-          // during its async URL lookup. In that case, do not turn the stopped
-          // live attempt into fresh fallback playback.
-          if ($voicePlayback.get().sequence > sequenceBeforeStart) {
-            awaitingSpokenResponseRef.current = false
-            settleAfterSpeech(false, true)
+        const budget = currentSpeechLimit()
+        const speakable = budget > 0 ? capSpeechText(text, budget) : text
 
+        if (!speakable.trim()) {
+          awaitingSpokenResponseRef.current = false
+          settleAfterSpeech(false)
+
+          return
+        }
+
+        // VAD barge-in: the user talking over the reply cuts playback, drops
+        // the remainder, AND keeps capturing — the interruption is transcribed
+        // from its first syllable.
+        ensureBargeMonitor()
+        speechStartSequenceRef.current = $voicePlayback.get().sequence
+
+        try {
+          // syncOnly: one POST to /api/audio/speak — the whole reply in a single
+          // synthesis, no WS sentence chunks, no client-direct ladder.
+          const started = await playSpeechText(speakable, {
+            ...ownerRef.current,
+            messageId: responseId,
+            source: 'voice-conversation',
+            syncOnly: true
+          })
+
+          if (!current()) {
             return
           }
 
-          // No streaming backend/provider: speak the whole reply once it lands.
-          speechSessionRef.current = null
-          awaitFallbackSpeech(responseId)
-
-          return
+          if (!started) {
+            notifyError(new Error('speech playback did not start'), voiceCopy.playbackFailed)
+          }
+        } catch (error) {
+          if (current()) {
+            notifyError(error, voiceCopy.playbackFailed)
+          }
         }
 
-        // startSpeechStream calls stopVoicePlayback once after its async URL
-        // lookup. A second sequence bump means the user pressed Stop while
-        // setup was still pending. Do not absorb that explicit stop into the
-        // post-start baseline or allow the new session to play.
-        const sequenceAfterStart = $voicePlayback.get().sequence
-        const stoppedDuringStart = sequenceAfterStart > sequenceBeforeStart + 1
-
-        speechStartSequenceRef.current = sequenceAfterStart
-        speechSessionRef.current = session
-
-        if (stoppedDuringStart) {
-          stopVoicePlayback()
-          awaitingSpokenResponseRef.current = false
-          settleAfterSpeech(false, true)
-
-          return
-        }
-
-        // Timer-driven feed: reply text flows into the session at delta rate
-        // regardless of React render cadence.
-        const feedTimer = window.setInterval(() => feedSpeechSession(responseId), 150)
-        feedSpeechSession(responseId)
-
-        const outcome = await session.done
-        window.clearInterval(feedTimer)
-
-        if (responseIdRef.current !== responseId) {
-          return
-        }
-
-        if (outcome === 'fallback') {
-          awaitFallbackSpeech(responseId)
-
+        if (!current()) {
           return
         }
 
@@ -990,7 +799,7 @@ export function useVoiceConversation({
         settleAfterSpeech(bargedRef.current)
       })()
     },
-    [awaitFallbackSpeech, ensureBargeMonitor, feedSpeechSession, settleAfterSpeech]
+    [ensureBargeMonitor, pendingResponse, settleAfterSpeech, voiceCopy.playbackFailed]
   )
 
   const start = useCallback(async () => {

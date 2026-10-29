@@ -468,16 +468,14 @@ describe('useVoiceConversation honors the read-aloud toggle (#44263)', () => {
     expect(playSpeechTextMock).not.toHaveBeenCalled()
   })
 
-  it('opens the live speech stream when read-aloud is on', async () => {
+  it('speaks the reply in one synthesis when read-aloud is on', async () => {
     $autoSpeakReplies.set(true)
 
     await driveOneTurn()
 
-    await waitFor(() => expect(startSpeechStreamMock).toHaveBeenCalled())
-
-    // The mocked stream session resolves null, so the loop falls back to
-    // per-sentence playback — that too is TTS for the reply.
+    // 整条回复一次性合成、一次性播放：不再逐句开流。
     await waitFor(() => expect(playSpeechTextMock).toHaveBeenCalled())
+    expect(startSpeechStreamMock).not.toHaveBeenCalled()
   })
 })
 

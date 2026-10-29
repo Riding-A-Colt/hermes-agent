@@ -7,8 +7,13 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 
 import { useVoiceConversation } from './use-voice-conversation'
 
+// 播报契约（2026-10-29 改）：回复生成期间不说话；整条回复落定后一次性发音。
+// 早先的实现在气泡封印时就把完整句子推给服务端逐句合成，中文回复因此被切成
+// 多段、段间各弹一次「正在准备音频」，长回复还会只念前半。
+
 const mocks = vi.hoisted(() => ({
   config: vi.fn(),
+  spoken: [] as string[],
   mic: {
     cancel: vi.fn(),
     start: vi.fn(async () => undefined),
@@ -25,7 +30,11 @@ vi.mock('@/hermes', async importOriginal => ({
   getApiRequestConnection: () => null,
   getApiRequestProfile: () => null,
   hermesApi: mocks.config,
-  speakText: vi.fn()
+  speakText: (text: string) => {
+    mocks.spoken.push(text)
+
+    return Promise.resolve({ data_url: 'blob:fixture' })
+  }
 }))
 vi.mock('@/api/client', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -60,7 +69,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-it('speaks a sealed narration while busy and keeps the session open for the final reply', async () => {
+it('waits for the whole reply, then speaks it in one synthesis', async () => {
   // This test drives the TTS playback path, gated by the read-aloud toggle
   // (#44263); opt in like the app does when replies are spoken.
   $autoSpeakReplies.set(true)
@@ -88,15 +97,7 @@ it('speaks a sealed narration while busy and keeps the session open for the fina
       speed: null
     }
   })
-  const inputs: string[] = []
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (_url: string, options: RequestInit) => {
-      inputs.push(JSON.parse(options.body as string).input)
-
-      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer }
-    })
-  )
+  mocks.spoken.length = 0
   const narration = 'Let me check the live state of the branch.'
   const answer = 'The branch is clean and the check is complete.'
   const messages: ChatMessage[] = []
@@ -127,25 +128,22 @@ it('speaks a sealed narration while busy and keeps the session open for the fina
   await act(async () => {
     await vi.advanceTimersByTimeAsync(300)
   })
-  // A complete sentence is spoken as soon as it lands — no waiting for the
-  // bubble to seal (that wait is what made CJK replies sit silent until the
-  // whole turn ended).
-  expect(inputs).toEqual([narration])
+  // 生成途中一个字都不该合成：逐句合成正是「正在准备音频」反复弹出的来源。
+  expect(mocks.spoken).toEqual([])
   messages[0].pending = false
   await act(async () => {
     await vi.advanceTimersByTimeAsync(300)
   })
-  // Sealing the bubble must not re-speak the same sentence.
-  expect(inputs).toEqual([narration])
-  expect(TestAudio.instances[0].play).toHaveBeenCalledOnce()
-  await act(async () => {
-    TestAudio.instances[0].dispatchEvent(new Event('ended'))
-  })
-  expect(mocks.mic.start).toHaveBeenCalledTimes(1)
+  // 回合还没结束（工具还在跑），仍然不说话。
+  expect(mocks.spoken).toEqual([])
+  expect(TestAudio.instances).toHaveLength(0)
   messages.push({ id: 'answer', role: 'assistant', pending: false, parts: [{ type: 'text', text: answer }] })
   hook.rerender({ busy: false })
   await act(async () => {
     await vi.advanceTimersByTimeAsync(300)
   })
-  expect(inputs).toEqual([narration, answer])
+  // 整轮落定：两句合成一次，一个音频、播一遍。
+  expect(mocks.spoken).toEqual([`${narration} ${answer}`])
+  expect(TestAudio.instances).toHaveLength(1)
+  expect(TestAudio.instances[0].play).toHaveBeenCalledOnce()
 })

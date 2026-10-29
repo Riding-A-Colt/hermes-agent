@@ -9,6 +9,7 @@ import { useVoiceConversation } from './use-voice-conversation'
 
 const mocks = vi.hoisted(() => ({
   config: vi.fn(),
+  spoken: [] as string[],
   mic: {
     cancel: vi.fn(),
     start: vi.fn(async () => undefined),
@@ -25,7 +26,11 @@ vi.mock('@/hermes', async importOriginal => ({
   getApiRequestConnection: () => null,
   getApiRequestProfile: () => null,
   hermesApi: mocks.config,
-  speakText: vi.fn()
+  speakText: (text: string) => {
+    mocks.spoken.push(text)
+
+    return Promise.resolve({ data_url: 'blob:fixture' })
+  }
 }))
 vi.mock('@/api/client', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -86,15 +91,7 @@ it('still speaks a reply shorter than the sentence floor', async () => {
       speed: null
     }
   })
-  const inputs: string[] = []
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (_url: string, options: RequestInit) => {
-      inputs.push(JSON.parse(options.body as string).input)
-
-      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer }
-    })
-  )
+  mocks.spoken.length = 0
   // 2 个字：「一加一等于几？」的回答就是这种长度——低于客户端 24 字的切句门槛。
   const reply = '2。'
   const messages: ChatMessage[] = []
@@ -133,7 +130,7 @@ it('still speaks a reply shorter than the sentence floor', async () => {
     await vi.advanceTimersByTimeAsync(300)
   })
 
-  expect(inputs).toEqual([reply])
+  expect(mocks.spoken).toEqual([reply])
 })
 
 it('speaks a short reply whose bubble vanishes before the turn settles', async () => {
@@ -165,15 +162,7 @@ it('speaks a short reply whose bubble vanishes before the turn settles', async (
       speed: null
     }
   })
-  const inputs: string[] = []
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (_url: string, options: RequestInit) => {
-      inputs.push(JSON.parse(options.body as string).input)
-
-      return { ok: true, arrayBuffer: async () => new Uint8Array([1]).buffer }
-    })
-  )
+  mocks.spoken.length = 0
   const messages: ChatMessage[] = []
 
   const hook = renderHook(
@@ -211,5 +200,5 @@ it('speaks a short reply whose bubble vanishes before the turn settles', async (
     await vi.advanceTimersByTimeAsync(300)
   })
 
-  expect(inputs).toEqual(['2。'])
+  expect(mocks.spoken).toEqual(['2。'])
 })
