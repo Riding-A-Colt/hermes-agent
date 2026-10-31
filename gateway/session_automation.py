@@ -326,8 +326,46 @@ def admission_display(payload):
     return card
 
 
+# Display/advisory fields that never resolve a route: a wake may carry them and the committed
+# envelope may not (or the other way round), so comparing them refuses every completion on a
+# Discord thread forever (#144006, #143720, #142402, PR #142665).
+_ROUTE_IDENTITY_IGNORED = frozenset({
+    'message_id', 'chat_name', 'chat_topic', 'auto_thread_created', 'auto_thread_initial_name',
+})
+
+
 def _route_identity(source):
-    return {key: value for key, value in source.to_dict().items() if key != 'message_id'}
+    return {key: value for key, value in source.to_dict().items()
+            if key not in _ROUTE_IDENTITY_IGNORED}
+
+
+def _route_identity_matches(committed, wake):
+    """Compare a committed human envelope's route with a rebuilt wake's route.
+
+    A wake is sometimes synthesized from a narrower record than the envelope that committed the
+    human turn (a voice/automation notice rebuilt from a session key carries no ``parent_chat_id``,
+    ``chat_name`` or ``chat_topic``). A field the wake never carried is *unknown*, not drift: it
+    must not refuse the wake, or every completion on that route is refused forever (upstream
+    #144006, #142402). A field it does carry must still match exactly, and a field only the wake
+    has must match too, so genuine cross-route wakes are still refused.
+    """
+    for key, want in committed.items():
+        got = wake.get(key)
+        if got is not None and got != want:
+            return False
+    for key, got in wake.items():
+        if key not in committed and got is not None:
+            return False
+    return True
+
+
+def _route_identity_diff(committed, wake):
+    """The fields that made ``_route_identity_matches`` fail, for the warning only."""
+    only_committed = {k: v for k, v in committed.items() if k not in wake or wake[k] != v}
+    only_wake = {k: v for k, v in wake.items() if k not in committed}
+    differ = {k: (committed.get(k), wake.get(k)) for k in committed
+              if k in wake and wake[k] is not None and wake[k] != committed[k]}
+    return {'only_committed': only_committed, 'only_wake': only_wake, 'differ': differ}
 
 
 def committed_route_envelope(authority, entry):
@@ -365,9 +403,14 @@ def snapshot_automation(authority, adapter, event, identity):
     restored = restore_native({'text': event.text, 'native_text_v1': {
         key: value for key, value in envelope.items() if key != 'media'}}, runner)
     # Synthetic wakes clear ``message_id`` (#52694, #123097) while the committed human source keeps
-    # it, so compare the routing/provenance identity, never the platform reply anchor.
-    if (_route_identity(restored.source) != _route_identity(event.source)
+    # it, so compare the routing/provenance identity, never the platform reply anchor. A wake
+    # rebuilt from a narrower record carries fewer fields: a missing one is unknown, not drift.
+    _committed_identity = _route_identity(restored.source)
+    _wake_identity = _route_identity(event.source)
+    if (not _route_identity_matches(_committed_identity, _wake_identity)
             or runner._adapter_for_source(restored.source) is not adapter):
+        logger.warning("Automation wake refused: route identity %s",
+                       _route_identity_diff(_committed_identity, _wake_identity))
         raise RuntimeStoreError('admission_conflict')
     provenance = deepcopy(envelope['provenance'])
     source = deepcopy(envelope['source'])
