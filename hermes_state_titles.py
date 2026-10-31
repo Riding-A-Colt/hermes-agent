@@ -13,6 +13,38 @@ from hermes_state_common import _COMPRESSION_CHILD_SQL, escape_like as _escape_l
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
 
+
+def _sync_discord_channel_name(session_id: str) -> None:
+    """Fire-and-forget: 会话自动命名落库后，把标题同步成对应 Discord 频道名。
+
+    Hermes 一频道一会话，频道名就是会话标题。这里只做派发，真正的查库/改名/去重
+    都在 ~/.local/bin/discord-rename-channel 里，脚本不存在就静默跳过。网络调用走
+    后台线程，绝不阻塞标题写入；任何异常都吞掉，标题写入不受影响。
+    """
+    import os
+    import subprocess
+    import threading
+
+    script = os.path.expanduser("~/.local/bin/discord-rename-channel")
+    if not os.path.exists(script):
+        return
+
+    def _run() -> None:
+        try:
+            subprocess.run(
+                [script, "--session", session_id],
+                timeout=30,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+
+    try:
+        threading.Thread(target=_run, daemon=True).start()
+    except Exception:
+        pass
+
 # ASCII controls (keeping \t \n \r for the whitespace collapse), then zero-width,
 # bidi override, object-replacement and interlinear-annotation code points.
 _TITLE_CONTROL_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
@@ -87,9 +119,12 @@ class SessionTitlesMixin:
         re-running the titler on an llm row is a no-op). No writer may move a hidden
         canonical Bot Chat off its title. Read and write are one compare-and-swap
         transaction, so a manual ``/title`` racing an in-flight generation is not clobbered."""
-        return bool(self._execute_write(
+        written = bool(self._execute_write(
             lambda conn: self._set_session_title_in_transaction(conn, session_id, title, source=source)
         ))
+        if written:
+            _sync_discord_channel_name(session_id)
+        return written
 
     def _set_session_title_in_transaction(self, conn, session_id: str, title: str, *, source: str):
         """Reuse title rules within an authority-owned transaction; never commit here."""

@@ -181,7 +181,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",), desktop="terminal"),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]", argument_mode="mixed"),
-    CommandDef("sessions", "Browse and resume previous sessions", "Session"),
+    CommandDef("sessions", "Browse and resume previous sessions", "Session",
+               args_hint="[all] [full] [search <query>] | <id-or-title>", argument_mode="mixed"),
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
