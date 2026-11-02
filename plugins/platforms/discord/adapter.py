@@ -1933,7 +1933,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     # Reasons from ``_read_websocket_health`` that mean the transport is confirmed dead,
     # not merely suspect: ``_liveness_loop`` escalates on the first such strike (#118487).
-    _TERMINAL_HEALTH_REASONS = frozenset({"socket_closed", "client_closed"})
+    #
+    # ``socket_closed`` 故意不在这里（2026-11-02）：ws.open 变 False 只说明这一刻 socket 关了，
+    # discord.py 自己的 resume 往往还在路上。一票判死会抢在库自愈之前拆掉整个 adapter，
+    # 表现为「每 5-6 分钟断连一次」（本机日志 168 次全栽在这个码上）。现在它和 ack_stale、
+    # latency 一样走连续阈值，给库留 1 个采样窗口；真死线照样到阈重连，只是晚 <=1 个 interval。
+    _TERMINAL_HEALTH_REASONS = frozenset({"client_closed"})
 
     def _read_websocket_health(self, client: Any) -> tuple[bool, str]:
         """Return current Discord Gateway health without making a REST request."""
@@ -2025,8 +2030,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 "[%s] Discord Gateway WebSocket unhealthy (%s, %d/%d)", self.name, reason, failures,
                 threshold,
             )
-            # A closed transport is a confirmed death, not a suspicion: escalate on the
-            # first strike; soft signals keep the threshold (#118487).
+            # client_closed 是确认死亡，首击即升级；socket_closed 等软信号走连续阈值，
+            # 好让 discord.py 先试自己的 resume（见 _TERMINAL_HEALTH_REASONS 的说明）。
             terminal = reason in self._TERMINAL_HEALTH_REASONS
             if failures < threshold and not terminal:
                 continue
