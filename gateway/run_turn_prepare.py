@@ -90,6 +90,21 @@ def _recover_or_remember_model(runner, skey, model):
     return model
 
 
+def _title_user_message_for_turn(event) -> Optional[str]:
+    """``event.text`` when it can name a session, else ``None`` (the caller falls back to the
+    enriched message, i.e. the STT transcript).
+
+    Discord delivers a captionless voice note as the empty-content placeholder. It is truthy, so a
+    plain ``event.text or None`` hands it to the titler, which strips it to nothing and returns
+    without naming the session — a voice-opened thread then keeps its auto-created name for good.
+    """
+    text = getattr(event, "text", None)
+    if not text:
+        return None
+    from agent.title_generator import is_titleable_user_message
+    return text if is_titleable_user_message(text) else None
+
+
 class GatewayTurnPrepareMixin:
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
@@ -672,7 +687,11 @@ class GatewayTurnPrepareMixin:
 
         # Keep human text separate from skills, sender metadata, and other model context.
         # With no text (e.g. voice-only), retain the existing enriched-message title fallback.
-        title_user_message = event.text or None
+        # Discord sends a captionless voice note as the empty-content placeholder, which is truthy
+        # and survives this `or None` — the titler then reduces it to nothing and the session is
+        # never named (a voice-opened thread keeps its auto-created name forever). Drop it here so
+        # the enriched (transcribed) message is used instead.
+        title_user_message = _title_user_message_for_turn(event)
 
         # Auto-load bound skill(s) only on NEW sessions; ongoing ones carry the content in history.
         _auto = getattr(event, "auto_skill", None)
