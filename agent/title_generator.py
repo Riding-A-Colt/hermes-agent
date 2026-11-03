@@ -130,6 +130,14 @@ _CONTROL_WRAPPERS = tuple(
                 "local-command-stdout", "task-notification", "system-reminder", "ide_opened_file", "ide_selection")
 )
 
+# Discord delivers a captionless voice note (or any attachment-only message) as this literal
+# placeholder; shared multi-user sessions prefix the speaker, hence the optional ``[name]`` group.
+# Matched line-wise so a transcript sharing the message is untouched.
+_EMPTY_CONTENT_PLACEHOLDER_RE = re.compile(
+    r"(?m)^[ \t]*(?:\[[^\]\n]{1,80}\][ \t]*)?\(The user sent a message with no text content\)[ \t]*$\n?"
+)
+
+
 # Hermes' own machine-authored openers: a compaction handoff or resumed session must not be titled after them.
 _MACHINE_PREFIXES = (
     "[CONTEXT COMPACTION", LEGACY_SUMMARY_PREFIX, "[Runtime note:", "[System note:", "[SYSTEM]",
@@ -291,6 +299,18 @@ def _attachment_only_opener(message: str) -> bool:
     return not residual.strip()
 
 
+def _strip_empty_content_placeholder(message: str) -> str:
+    """Drop the captionless-voice-note placeholder, with an optional leading ``[sender]`` attribution.
+
+    Shared multi-user sessions stamp the speaker before STT runs, so the opener reaches the titler as
+    ``[RidingAColt] (The user sent a message with no text content)`` side by side with the transcript.
+    Left in, a weak title model describes the placeholder instead of the message and names the session
+    "Empty message received" — a name that then renames the Discord thread and sticks (a model title is
+    written once). Kept local so the titler does not import the gateway transcription mixin.
+    """
+    return _EMPTY_CONTENT_PLACEHOLDER_RE.sub("", message or "").strip()
+
+
 def _summarize_user_message(user_message: str) -> str:
     """Text worth titling: describe a ``/skill`` invocation (it embeds the whole skill body), then strip wrappers."""
     if not user_message:
@@ -301,7 +321,7 @@ def _summarize_user_message(user_message: str) -> str:
         described = describe_skill_invocation(user_message)
     except Exception:
         logger.debug("Skill-scaffolding summary failed; titling raw", exc_info=True)
-    return strip_control_wrappers(user_message if described is None else described)
+    return _strip_empty_content_placeholder(strip_control_wrappers(user_message if described is None else described))
 
 
 def build_title_input(user_message: str, title_preview: str | None = None) -> str:

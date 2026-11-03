@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from typing import Optional
 
 from gateway.run_common import _UNSET
@@ -144,12 +145,30 @@ class GatewayInboundTranscriptionMixin:
             return text, []
 
     _EMPTY_TEXT_PLACEHOLDER = "(The user sent a message with no text content)"
+    # Shared multi-user sessions attribute the speaker to the caption BEFORE STT runs, so the
+    # captionless opener arrives as "[RidingAColt] (The user sent a message with no text content)".
+    _SENDER_PREFIX_RE = re.compile(r"^\[[^\]\n]{1,80}\]\s*")
+
+    @classmethod
+    def _strip_empty_content_placeholder(cls, user_text: str) -> str:
+        """``user_text`` without a leading sender attribution or the empty-content placeholder.
+
+        Exact equality was not enough: once the sender prefix is glued on, the placeholder stopped
+        matching and survived into history — the titler then named the session "Empty message
+        received" and the Discord thread followed it.
+        """
+        body = (user_text or "").strip()
+        if not body:
+            return ""
+        candidate = body if body == cls._EMPTY_TEXT_PLACEHOLDER else cls._SENDER_PREFIX_RE.sub("", body, count=1)
+        return "" if candidate.strip() == cls._EMPTY_TEXT_PLACEHOLDER else body
 
     @classmethod
     def _prepend_media_prefix(cls, prefix: str, user_text: str) -> str:
         """``prefix`` + the user's text; the Discord empty-content placeholder is dropped as redundant."""
-        if user_text and user_text.strip() != cls._EMPTY_TEXT_PLACEHOLDER:
-            return f"{prefix}\n\n{user_text}"
+        remaining = cls._strip_empty_content_placeholder(user_text)
+        if remaining:
+            return f"{prefix}\n\n{remaining}"
         return prefix
 
     @staticmethod

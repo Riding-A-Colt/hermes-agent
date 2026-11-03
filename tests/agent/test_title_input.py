@@ -71,3 +71,18 @@ def test_title_override_cannot_enable_titling_for_machine_runs(monkeypatch, plat
     _maybe_title_session_at_turn_start(agent, [], "Actual question")
 
     title.assert_not_called()
+
+
+@pytest.mark.parametrize("text, titleable, expected_input", [
+    ("[RidingAColt] (The user sent a message with no text content)", False, None),
+    ("为什么滴眼药水后嘴里有味道？\n\n[RidingAColt] (The user sent a message with no text content)",
+     True, "为什么滴眼药水后嘴里有味道？"),
+])
+def test_title_ignores_empty_content_placeholder(text, titleable, expected_input):
+    """A captionless voice note reaches the titler as the empty-content placeholder (with a sender
+    prefix in shared sessions); titling must skip it entirely or fall back to the real transcript."""
+    from agent.title_generator import build_title_input, is_titleable_user_message
+
+    assert is_titleable_user_message(text) is titleable
+    if expected_input is not None:
+        assert build_title_input(text) == expected_input

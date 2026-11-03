@@ -95,3 +95,24 @@ async def test_enrich_message_with_transcription_guards_empty_transcript():
     assert transcripts == []
 
 
+
+
+@pytest.mark.parametrize("caption", [
+    "(The user sent a message with no text content)",
+    # Shared multi-user sessions attribute the speaker BEFORE STT runs.
+    "[RidingAColt] (The user sent a message with no text content)",
+])
+def test_prepend_media_prefix_drops_empty_content_placeholder(caption):
+    """The captionless-voice placeholder must not survive into the title/history — once it does, the
+    titler names the session "Empty message received" and the Discord thread follows it."""
+    from gateway.run import GatewayRunner
+
+    assert GatewayRunner._prepend_media_prefix('"转录文本"', caption) == '"转录文本"'
+
+
+def test_prepend_media_prefix_keeps_sender_prefixed_real_text():
+    from gateway.run import GatewayRunner
+
+    assert GatewayRunner._prepend_media_prefix('"转录文本"', "[RidingAColt] 我自己打的字") == (
+        '"转录文本"\n\n[RidingAColt] 我自己打的字'
+    )
