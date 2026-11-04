@@ -271,6 +271,12 @@ _REAL_PROFILE_CDP_LOCK_TIMEOUT_S = 30.0
 _real_profile_cdp_lock = threading.Lock()
 _real_profile_cdp_cache: dict = {}
 _real_profile_chrome_procs: list = []  # Popen handles of directly-launched real browsers
+# [lily] Wall-clock of the last real-profile use (0.0 = never used this process). The
+# shared copy-browser is otherwise immortal while the owning Hermes process lives — it is
+# only terminated by the exit hook — which is wrong for a permanently-resident backend:
+# one 17:10 browsing task held ~1.3 GB for the rest of the day. The cleanup thread closes
+# it once it has been unused for real_profile_idle_timeout seconds.
+_real_profile_last_used = 0.0
 
 
 
@@ -404,6 +410,23 @@ def _get_session_inactivity_timeout() -> int:
 
 
 BROWSER_SESSION_INACTIVITY_TIMEOUT = _get_session_inactivity_timeout()
+
+
+# [lily] Idle ceiling for the shared real-profile copy-browser. Upstream keeps it alive for
+# as long as the owning process runs (exit hook only), so a permanently-resident backend
+# pays its ~1.3 GB all day for a task that runs every few days. 0 disables this (upstream
+# behaviour). Floor 300 s so a misconfigured value cannot close it mid-task.
+REAL_PROFILE_IDLE_TIMEOUT_DEFAULT = 1800
+
+
+def _get_real_profile_idle_timeout() -> int:
+    return _browser_cfg(
+        "real_profile_idle_timeout", REAL_PROFILE_IDLE_TIMEOUT_DEFAULT,
+        lambda v: REAL_PROFILE_IDLE_TIMEOUT_DEFAULT if v is None else (0 if int(v) <= 0 else max(int(v), 300)),
+        "real_profile_idle_timeout from config",
+    )
+
+
 # Orphan reaper cadence: a startup-only reap can never recover from a leak that
 # appears after boot in a long-lived process.
 BROWSER_ORPHAN_REAP_INTERVAL = 300  # seconds

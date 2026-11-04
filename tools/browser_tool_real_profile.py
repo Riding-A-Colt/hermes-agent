@@ -31,6 +31,90 @@ def _terminate_real_profile_chrome() -> None:
         _terminate(_bt._real_profile_chrome_procs.pop(), what="real-profile chrome")
 
 
+# [lily] Idle close of the shared copy-browser. Upstream only terminates it from the exit
+# hook, so on a permanently-resident backend it holds ~1.3 GB from the first browsing task
+# until the next restart. See _real_profile_last_used in tools/browser_tool.py.
+def note_real_profile_activity() -> None:
+    """Stamp the shared browser as just-used; called on every successful CDP resolve."""
+    import time as _time
+    setattr(_origin(), "_real_profile_last_used", _time.time())
+
+
+def _kill_chrome_on_copy_dir(copy_dir: str) -> int:
+    """Tree-kill any Chromium still holding *copy_dir*; returns how many were killed.
+
+    Covers the case the Popen handles cannot: a Chrome inherited from an earlier Hermes
+    process (``_surviving_chrome_cdp`` re-attach path) has no handle, so without this the
+    idle close would leave it running and the idle clock would fire again every cycle.
+    """
+    if not copy_dir:
+        return 0
+    try:
+        import psutil
+    except Exception:
+        return 0
+    needle = f"--user-data-dir={copy_dir}"
+    killed = 0
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            cmdline = proc.info.get("cmdline") or []
+            if not any(needle in arg for arg in cmdline):
+                continue
+            for child in proc.children(recursive=True):
+                try:
+                    child.kill()
+                except Exception:
+                    pass
+            proc.kill()
+            killed += 1
+        except Exception:
+            continue
+    return killed
+
+
+def reap_idle_real_profile() -> bool:
+    """Close the shared real-profile browser once it has been unused past the idle timeout.
+
+    Returns True when something was closed. Runs from the cleanup thread every 30 s, so a
+    no-op costs one dict look-up. Never touches a session resolved within the timeout.
+    """
+    import time as _time
+    _bt = _origin()
+    timeout = _bt._get_real_profile_idle_timeout()
+    if timeout <= 0:
+        return False
+    last_used = _bt._real_profile_last_used
+    if not last_used:
+        # Nothing recorded this process: either it was never used, or the owner of a
+        # surviving browser is another process (the orphan reaper owns that case).
+        if not _bt._real_profile_chrome_procs:
+            return False
+        last_used = _time.time()
+        setattr(_bt, "_real_profile_last_used", last_used)
+        return False
+    idle = _time.time() - last_used
+    if idle < timeout:
+        return False
+    if not (_bt._real_profile_chrome_procs or _bt._real_profile_cdp_cache.get("cdp")):
+        return False  # nothing of ours is up
+    copy_dir = _bt._real_profile_cdp_cache.get("copy_dir", "")
+    _bt.logger.info("real-profile: idle for %ds (limit %ds) — closing the copy-browser", int(idle), timeout)
+    try:
+        _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
+    except Exception as e:
+        _bt.logger.warning("real-profile idle close: session close failed: %s", e)
+    try:
+        _terminate_real_profile_chrome()
+    except Exception as e:
+        _bt.logger.warning("real-profile idle close: chrome terminate failed: %s", e)
+    stray = _kill_chrome_on_copy_dir(copy_dir)
+    if stray:
+        _bt.logger.info("real-profile: killed %d stray chrome(s) holding %s", stray, copy_dir)
+    _bt._real_profile_cdp_cache.pop("cdp", None)
+    setattr(_bt, "_real_profile_last_used", 0.0)
+    return True
+
+
 def _cdp_http_ready(http_cdp: str) -> bool:
     """True when an ``http://host:port`` CDP discovery root answers."""
     from tools.browser_lightpanda import _cdp_ready
@@ -304,6 +388,7 @@ def _real_profile_cdp() -> tuple:
             # Re-claim the shared daemon's socket dir so the orphan reaper's idle clock sees
             # this process still using it (a cache hit never runs a daemon command).
             _session._prepare_session_socket_dir(_bt._REAL_PROFILE_SESSION)
+            note_real_profile_activity()
             return cached, None
         _bt._real_profile_cdp_cache.pop("cdp", None)
 
@@ -319,6 +404,8 @@ def _real_profile_cdp() -> tuple:
         existing = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
         if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
             _bt._real_profile_cdp_cache["cdp"] = existing
+            _bt._real_profile_cdp_cache["copy_dir"] = copy_dir
+            note_real_profile_activity()
             return existing, None
         if existing:  # stale/wrong-dir session: close it so nothing holds the dir open
             _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
@@ -332,7 +419,9 @@ def _real_profile_cdp() -> tuple:
             if not cdp:
                 return None, err
             _bt._real_profile_cdp_cache["cdp"] = cdp
+            _bt._real_profile_cdp_cache["copy_dir"] = copy_dir
             _bt.logger.info("real-profile: re-attached to surviving Chrome at %s (%s)", cdp, copy_dir)
+            note_real_profile_activity()
             return cdp, None
 
         copy_dir, err = snapshot_real_profile(browser)
@@ -348,7 +437,9 @@ def _real_profile_cdp() -> tuple:
         if not cdp:
             return None, err
         _bt._real_profile_cdp_cache["cdp"] = cdp
+        _bt._real_profile_cdp_cache["copy_dir"] = copy_dir
         _bt.logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
+        note_real_profile_activity()
         return cdp, None
     finally:
         _bt._real_profile_cdp_lock.release()

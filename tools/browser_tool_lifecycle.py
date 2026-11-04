@@ -431,6 +431,10 @@ def _browser_cleanup_thread_worker():
         except Exception as e:
             _bt.logger.warning("Cleanup thread error: %s", e)
 
+        # [lily] The shared real-profile copy-browser is only closed by the exit hook
+        # upstream, so a long-lived backend keeps ~1.3 GB forever. Close it on idle.
+        _best_effort("Real-profile idle reap", _real_profile.reap_idle_real_profile)
+
         for _ in range(30):  # 1s granularity so stop is quick
             if not _bt._cleanup_running:
                 break
