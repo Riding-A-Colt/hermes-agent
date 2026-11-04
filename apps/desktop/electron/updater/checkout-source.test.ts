@@ -489,3 +489,25 @@ if not getattr(urllib.request, '_hermes_loopback', False):
     fs.rmSync(temporary, { recursive: true, force: true })
   }
 }, 30000)
+
+it('reports a host with nothing to check as unsupported, not as a failed check', async () => {
+  const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-no-install-'))
+  const home: string = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-no-install-home-'))
+
+  try {
+    // A remote-only client or a self-built app: no `pm/` (PM-managed) and no
+    // venv (legacy checkout). The refusal must be a status the UI can name,
+    // and it must not spawn the probe (the git sentinel would fail).
+    expect(
+      await readSourceUpdate({ python: null, git: 'git-must-not-run', updateRoot: root, hermesHome: home })
+    ).toMatchObject({
+      supported: false,
+      reason: 'no-local-install',
+      updateAvailable: false,
+      hermesRoot: root
+    })
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})

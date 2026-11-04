@@ -3180,6 +3180,7 @@ catalog: CatalogTranslations
     tryAgain: string
     notAvailableTitle: string
     unsupportedMessage: string
+    noLocalInstall: string
     connectionRetry: string
     gitUnusable: string
     connectionSettings: string

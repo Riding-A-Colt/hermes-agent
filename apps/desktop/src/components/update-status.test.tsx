@@ -162,6 +162,15 @@ describe('deriveUpdateStatus', () => {
     expect(view.supported).toBe(false)
   })
 
+  it('names a host with no local install instead of echoing a probe failure', () => {
+    const view = derive({ supported: false, reason: 'no-local-install' })
+
+    expect(view.tone).toBe('unsupported')
+    expect(view.line).toBe(en.updates.noLocalInstall)
+    expect(view.error).toBeUndefined()
+    expect(view.updateAvailable).toBe(false)
+  })
+
   it('check error shows one plain line and keeps the transport message with the error', () => {
     const view = derive({ supported: true, error: 'check-failed', message: 'ECONNREFUSED' })
 

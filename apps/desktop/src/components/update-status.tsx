@@ -123,7 +123,13 @@ function ordinaryUpdateStatus({
   const applying = apply.applying || apply.stage === 'restart'
 
   if (!supported) {
-    return { applying, line: status?.message ?? u.unsupportedMessage, supported, tone: 'unsupported', updateAvailable }
+    // A host with no installation to check is a missing capability, not a
+    // failed check: name it in the user's language instead of echoing the
+    // probe's refusal back at them.
+    const line =
+      status?.reason === 'no-local-install' ? u.noLocalInstall : (status?.message ?? u.unsupportedMessage)
+
+    return { applying, line, supported, tone: 'unsupported', updateAvailable }
   }
 
   if (status?.error) {
@@ -402,19 +408,23 @@ function UpdateStatusCardBody({
         </div>
       </div>
 
-      {view.tone !== 'unsupported' && (
+      {(view.tone !== 'unsupported' || showReleaseNotes) && (
         <div className="mt-3 flex flex-wrap items-center gap-4">
-          <Button
-            disabled={checking || view.applying}
-            onClick={() => void handleCheck()}
-            size="sm"
-            variant="textStrong"
-          >
-            {checking ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
-            {checking ? u.checkingShort : u.checkNow}
-          </Button>
+          {view.tone !== 'unsupported' && (
+            <>
+              <Button
+                disabled={checking || view.applying}
+                onClick={() => void handleCheck()}
+                size="sm"
+                variant="textStrong"
+              >
+                {checking ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+                {checking ? u.checkingShort : u.checkNow}
+              </Button>
 
-          <UpdateActions target={target} u={u} view={view} />
+              <UpdateActions target={target} u={u} view={view} />
+            </>
+          )}
 
           {showReleaseNotes && (
             <Button asChild className="ml-auto" size="sm" variant="text">

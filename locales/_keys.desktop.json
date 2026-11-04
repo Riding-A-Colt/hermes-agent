@@ -5341,6 +5341,7 @@
     "updates.mixedBlockerBody",
     "updates.moreChanges",
     "updates.never",
+    "updates.noLocalInstall",
     "updates.notAvailableTitle",
     "updates.notNow",
     "updates.onLatest",

@@ -3590,6 +3590,7 @@ export const zhOverrides = {
     tryAgain: '重试',
     notAvailableTitle: '更新不可用',
     unsupportedMessage: '此版本的 Hermes 无法在应用内自行更新。',
+    noLocalInstall: '本机没有可检查的 Hermes 安装。这个构建在应用外更新：合并上游稳定版后重建。',
     connectionRetry: '请检查网络连接后重试。',
     gitUnusable: 'Hermes 无法在这台电脑上运行 Git，因此无法检查更新。',
     latestBody: '你正在运行最新版本。',

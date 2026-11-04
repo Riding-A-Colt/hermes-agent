@@ -79,6 +79,22 @@ export async function sourceUpdateEnvironment(
 }
 
 /** Python owns config identity and publication checks; this bridge only transports them. */
+
+/**
+ * The answer for a host with no installation to compare: a remote-only client,
+ * or a self-built app whose updates happen outside the app by rebuilding. This
+ * is a missing capability, not a failed check — retrying cannot change it.
+ */
+function noLocalInstallStatus(updateRoot: string): SourceUpdate {
+  return {
+    supported: false,
+    reason: 'no-local-install',
+    updateAvailable: false,
+    hermesRoot: updateRoot,
+    fetchedAt: Date.now()
+  }
+}
+
 export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<SourceUpdate | null> {
   // The install launcher boots PM's committed Python and dependency generation.
   // A PATH Python can import this checkout yet lack its selected dependencies.
@@ -93,7 +109,7 @@ export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<Source
   }
 
   if (!managed && !probe.python) {
-    throw new Error('No Python interpreter is available to check the source update channel.')
+    return noLocalInstallStatus(probe.updateRoot)
   }
 
   const args: string[] = [
