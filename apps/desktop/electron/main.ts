@@ -4548,6 +4548,29 @@ async function isSourceRuntimeUsable(root: string): Promise<boolean> {
   return (await resolveSourceInstallationBackend(root, [], { hermesHome: HERMES_HOME })) !== null
 }
 
+// Client-only desktops (a remote connection is primary) intentionally keep no
+// local runtime. `isSourceRuntimeUsable` is cheap in exactly that case: with no
+// `hermes_cli/main.py` it returns without spawning anything.
+async function localRuntimeMissing(): Promise<boolean> {
+  if (userLauncherInstallRoot(IS_WINDOWS, HERMES_HOME)) {
+    return false
+  }
+
+  try {
+    return !(await isSourceRuntimeUsable(ACTIVE_HERMES_ROOT))
+  } catch {
+    return false
+  }
+}
+
+/** A remote/ssh connection owns this desktop, so a local dial is a client-side
+ *  request, not a request to install. */
+function primaryConnectionIsRemote(registry: { primary: string; connections: RegistryConnection[] }) {
+  const primary = registry.connections.find(connection => connection.id === registry.primary)
+
+  return primary && primary.kind !== 'local' ? primary : null
+}
+
 function activeRuntimeState(backend: SourceBackend | null): ActiveRuntimeState {
   // We DELIBERATELY do NOT verify that the checkout is currently at the
   // pinned commit -- users update via the in-app update path or `hermes
@@ -5085,6 +5108,21 @@ async function ensureRuntime(
     bundledError.isBootstrapFailure = true
     bootstrapFailure = bundledError
     throw bundledError
+  }
+
+  // Backstop for any remaining local dial on a client-only desktop: a remote
+  // connection is primary and this machine has nothing to spawn, so never drive
+  // the installer (its download can 404 forever on a fork-built stamp).
+  if (backend.kind === 'bootstrap-needed' && !bootstrapRepairRequested) {
+    const primarySource = primaryConnectionIsRemote(readDesktopConnectionsRegistry())
+
+    if (primarySource && (await localRuntimeMissing())) {
+      rememberLog('[bootstrap] skipped: a remote connection is primary and no local runtime is installed')
+
+      throw new Error(
+        'This device has no Hermes runtime installed. Hermes Desktop is connected to a remote gateway; install Hermes locally if you want to use This device.'
+      )
+    }
   }
 
   if (backend.kind === 'bootstrap-needed') {
@@ -10616,6 +10654,23 @@ async function ensureRegistryBackend(
 
   if (!source) {
     throw new Error(`No connection with id "${id}".`)
+  }
+
+  // Client-only desktop: a remote connection is primary and this machine has no
+  // local runtime, so the 'local' entry has nothing to serve. Dialing it would
+  // run the first-run installer — and a fork-built stamp can name a branch that
+  // exists only in the fork, so that download 404s forever against the upstream
+  // repo, leaving every local-scoped request (sessions, profiles, This device)
+  // behind an install-failure overlay. Serve those requests from the primary
+  // remote instead; an explicit repair request still reaches the installer.
+  if (source.kind === 'local' && !bootstrapRepairRequested) {
+    const primarySource = primaryConnectionIsRemote(registry)
+
+    if (primarySource && (await localRuntimeMissing())) {
+      rememberLog(`[backend] no local runtime; serving connection "local" from ${primarySource.id}`)
+
+      return ensureRegistryBackend(primarySource.id, profile, managedUpdateCorrelation, opts)
+    }
   }
 
   if (source.kind === 'ssh') {
