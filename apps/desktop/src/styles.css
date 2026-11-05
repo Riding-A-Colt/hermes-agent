@@ -1986,6 +1986,31 @@ body.guest-pointer-lock :is(webview, iframe) {
   text-align: center;
 }
 
+/* 空态背景：Lily 人像点阵 + 竖排诗句数据流（#0053FD 单色）。
+   浅色主题白底，深色主题黑底，图在 src/assets/ 下，随构建打包。 */
+.empty-chat-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: url('./assets/empty-state-bg-light.png');
+  background-size: cover;
+  background-position: center 42%;
+  background-repeat: no-repeat;
+  opacity: 0.92;
+}
+
+.dark .empty-chat-bg {
+  background-image: url('./assets/empty-state-bg-dark.png');
+  opacity: 0.85;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .empty-chat-bg {
+    transition: opacity 240ms ease-out;
+  }
+}
+
 [data-slot='aui_intro'] > div {
   max-width: var(--composer-width);
 }

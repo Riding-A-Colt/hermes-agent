@@ -792,6 +792,7 @@ const ChatViewContent = memo(function ChatViewContent({
           data-slot="composer-bounds"
           {...dropHandlers}
         >
+          {showIntro && <div aria-hidden className="empty-chat-bg" data-slot="empty-chat-bg" />}
           <Thread
             clampToComposer={showChatBar}
             cwd={currentCwd}
