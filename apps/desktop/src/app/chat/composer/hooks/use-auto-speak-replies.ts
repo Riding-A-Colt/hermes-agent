@@ -1,9 +1,10 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
-import { releaseUnplayedSpokenReply, spokenReplyOf, spokenSegmentKey } from '@/lib/spoken-reply'
 import { capSpeechText } from '@/lib/speech-text'
-import { playSpeechText } from '@/lib/voice-playback'
+import { releaseUnplayedSpokenReply, spokenReplyOf, spokenSegmentKey } from '@/lib/spoken-reply'
+import { playSpeechText, startSpeechStream } from '@/lib/voice-playback'
+import type { SpeechStreamSession } from '@/lib/voice-playback'
 import { ownsAmbientCue } from '@/store/ambient'
 import { notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
@@ -54,18 +55,32 @@ interface UseAutoSpeakReplies {
   failureLabel: string
   /** Mark the current last reply spoken — shared dedupe with the conversation consumer. */
   markSpoken: () => void
-  /** Latest completed assistant reply, or null; `pending` true while still streaming. */
+  /** Latest assistant reply, or null; `pending` true while still streaming. */
   pendingReply: () => AutoSpeakReply | null
   /** Re-arm on session switch so opening a chat never reads its existing last reply. */
   sessionId: string | null | undefined
 }
 
+/** One read-aloud run: the live speech session plus how much text it already has. */
+interface LiveSpeech {
+  key: string
+  session: null | SpeechStreamSession
+  opening: boolean
+  sent: number
+  finished: boolean
+  cappedText: string
+  marked: ReturnType<typeof spokenReplyOf>
+}
+
 /**
- * Pure-TTS auto-speak: when `voice.auto_tts` is on, read each completed assistant
- * turn aloud — no dictation, no conversation loop. Stays off while a full voice
- * conversation runs (it speaks replies itself) and never overlaps clips: a reply
- * landing mid-playback is held and spoken on the playback-idle edge. Always reads
- * the latest reply, so a backlog collapses to the newest.
+ * Pure-TTS auto-speak: when `voice.auto_tts` is on, read assistant replies aloud —
+ * no dictation, no conversation loop. A streaming provider is fed while the reply
+ * is still generating, so speech overlaps generation instead of waiting for the
+ * last token; everything else falls back to reading the finished text once. Stays
+ * off while a full voice conversation runs (it speaks replies itself) and never
+ * overlaps clips: a reply landing mid-playback is held and spoken on the
+ * playback-idle edge. Always reads the latest reply, so a backlog collapses to the
+ * newest.
  */
 export function useAutoSpeakReplies({
   conversationActive,
@@ -91,32 +106,65 @@ export function useAutoSpeakReplies({
     latest.current.markSpoken()
 
     let attemptSeq = 0
+    let live: LiveSpeech | null = null
 
-    const speakLatest = () => {
-      const { connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile } = latest.current
-
-      if (conversationActive || $voicePlayback.get().status !== 'idle') {
+    const stopLive = (finish: boolean) => {
+      if (!live) {
         return
       }
 
-      const reply = pendingReply()
+      if (finish && live.session && !live.finished) {
+        live.finished = true
+        live.session.finish()
+      }
 
-      if (!reply || reply.pending) {
+      live = null
+    }
+
+    /** Push whatever text exists right now; finish once nothing more will be spoken. */
+    const feed = () => {
+      const reply = latest.current.pendingReply()
+
+      if (!live || !reply || !live.session || live.finished) {
         return
       }
 
+      // The live message id flips while a reply streams (hydration rewrites the
+      // row). Follow it until we have actually spoken something; after that a
+      // different id means a new message and the old run keeps its own text.
+      if (reply.id !== live.key) {
+        if (live.sent > 0) {
+          return
+        }
+
+        live.key = reply.id
+      }
+
+      // 摘要方案（付费 API 音色默认）：只念开头一小段，长文留在屏幕上。
+      const budget = currentSpeechLimit()
+      const target = budget > 0 ? capSpeechText(reply.text, budget) : reply.text
+      live.cappedText = target
+
+      if (target.length > live.sent) {
+        console.error(`[asdiag] append ${live.sent}->${target.length}`)
+        live.session.append(target.slice(live.sent))
+        live.sent = target.length
+      }
+
+      if (!reply.pending || (budget > 0 && target.length >= budget)) {
+        // Mark only now: `pendingReply()` returns null for an id already marked
+        // spoken, so marking up front would blind the feed we depend on.
+        latest.current.markSpoken()
+        live.marked = spokenReplyOf(sessionId)
+        live.finished = true
+        live.session.finish()
+      }
+    }
+
+    /** Read a finished reply once through the non-streaming path. */
+    const speakSealed = (reply: AutoSpeakReply, segmentKey: null | string, claimKey: string) => {
       const attempt = ++attemptSeq
-
-      markSpoken()
-      const marked = spokenReplyOf(sessionId)
-      // Only one window voices a turn when the same chat is open in several:
-      // the turn's owner (see claimSpeech), then once per message. Keys are the
-      // turn and its message text, not the row id: hydration rewrites the row
-      // id, and a second claim would start a second clip. A turn with tool
-      // calls speaks several messages, so the turn alone would let the first
-      // message's claim refuse the final reply.
-      const segmentKey = reply.turnKey ? spokenSegmentKey(reply.turnKey, reply.segmentText ?? reply.text) : null
-      const claimKey = `speak:${segmentKey ?? reply.id}`
+      const { connectionId, failureLabel, markSpoken, profile } = latest.current
 
       void claimSpeech(reply.turnKey, claimKey).then(owns => {
         if (attempt !== attemptSeq) {
@@ -130,6 +178,8 @@ export function useAutoSpeakReplies({
           return
         }
 
+        markSpoken()
+        const marked = spokenReplyOf(sessionId)
         // 摘要方案（付费 API 音色默认）：只念开头一小段，长文留在屏幕上。
         const budget = currentSpeechLimit()
         const spokenText = budget > 0 ? capSpeechText(reply.text, budget) : reply.text
@@ -156,12 +206,148 @@ export function useAutoSpeakReplies({
       })
     }
 
+    const speakLatest = () => {
+      const { conversationActive, pendingReply } = latest.current
+
+      if (conversationActive) {
+        return
+      }
+
+      const reply = pendingReply()
+
+      if (!reply || !reply.text.trim()) {
+        return
+      }
+
+      // A different message than the one being read: drop the old run. Before it
+      // has spoken anything the id may simply have been rewritten under us, so
+      // let feed() adopt the new one instead of killing the session.
+      if (live && live.key !== reply.id && live.sent > 0) {
+        stopLive(true)
+      }
+
+      // Another clip is playing (previous reply, manual playback): hold this one.
+      if (!live && $voicePlayback.get().status !== 'idle') {
+        console.error('[asdiag] hold: another clip playing')
+
+        return
+      }
+
+      // Only one window voices a turn when the same chat is open in several:
+      // the turn's owner (see claimSpeech), then once per message. Keys are the
+      // turn and its message text, not the row id: hydration rewrites the row
+      // id, and a second claim would start a second clip.
+      const segmentKey = reply.turnKey ? spokenSegmentKey(reply.turnKey, reply.segmentText ?? reply.text) : null
+      const claimKey = `speak:${segmentKey ?? reply.id}`
+
+      // Sealed reply: nothing left to stream, read it once.
+      if (!reply.pending && !live) {
+        speakSealed(reply, segmentKey, claimKey)
+
+        return
+      }
+
+      if (live) {
+        feed()
+
+        return
+      }
+
+      // Streaming reply: open the speech session on the first delta, then keep feeding it.
+      const attempt = ++attemptSeq
+      const slot: LiveSpeech = {
+        key: reply.id, session: null, opening: true, sent: 0, finished: false, cappedText: '', marked: null
+      }
+      live = slot
+
+      const { connectionId, failureLabel, markSpoken, profile } = latest.current
+
+      void claimSpeech(reply.turnKey, claimKey).then(async owns => {
+        if (attempt !== attemptSeq || live !== slot) {
+          return
+        }
+
+        if (!owns) {
+          console.error('[asdiag] claim refused')
+          live = null
+
+          return
+        }
+
+        const session = await startSpeechStream({
+          connectionId,
+          messageId: reply.id,
+          profile,
+          source: 'read-aloud',
+          ...(segmentKey ? { turnKey: segmentKey } : {})
+        })
+
+        if (attempt !== attemptSeq || live !== slot) {
+          session?.finish()
+
+          return
+        }
+
+        console.error(`[asdiag] session opened=${Boolean(session)}`)
+
+        if (!session) {
+          // No streaming backend/provider: read it once when the turn seals.
+          live = null
+          const done = pendingReply()
+
+          if (done && !done.pending && done.id === reply.id) {
+            speakSealed(done, segmentKey, claimKey)
+          } else {
+            releaseUnplayedSpokenReply(sessionId, slot.marked)
+          }
+
+          return
+        }
+
+        slot.session = session
+        slot.opening = false
+        feed()
+
+        void session.done.then(
+          outcome => {
+            console.error(`[asdiag] done=${outcome} sent=${slot.sent} capped=${slot.cappedText.length}`)
+            if (live === slot) {
+              live = null
+            }
+
+            if (outcome === 'fallback') {
+              releaseUnplayedSpokenReply(sessionId, slot.marked)
+
+              if (slot.cappedText) {
+                void playSpeechText(slot.cappedText, {
+                  connectionId,
+                  messageId: slot.key,
+                  profile,
+                  source: 'read-aloud',
+                  ...(segmentKey ? { turnKey: segmentKey } : {})
+                }).catch(error => notifyError(error, failureLabel))
+              }
+            }
+          },
+          error => {
+            if (live === slot) {
+              live = null
+            }
+
+            releaseUnplayedSpokenReply(sessionId, slot.marked)
+            notifyError(error, failureLabel)
+          }
+        )
+      })
+    }
+
     // Re-check on a reply completing ($messages) and on the prior clip ending
     // ($voicePlayback → idle), which frees us to read the next held reply.
     const stops = [$messages.subscribe(speakLatest), $voicePlayback.listen(speakLatest)]
 
     return () => {
       attemptSeq += 1
+      stopLive(false)
       stops.forEach(f => f())
     }
   }, [$messages, enabled, sessionId])

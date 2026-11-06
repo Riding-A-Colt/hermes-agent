@@ -11,6 +11,7 @@ import {
   playSpeechText,
   type SpeechChain,
   startSpeechChain,
+  startSpeechStream,
   stopVoicePlayback,
   takeVoicePlaybackInterrupted
 } from '@/lib/voice-playback'
@@ -687,6 +688,7 @@ export function useVoiceConversation({
       }
 
       const response = pendingResponse()
+      console.error(`[vsdiag] tick status=${status} busy=${busy} awaiting=${awaitingSpokenResponseRef.current} resp=${response?.id ?? '-'} pending=${response?.pending} len=${response?.text?.length ?? 0} session=${speechSessionRef.current ? 'open' : '-'}`)
 
       if (response && response.id === responseId) {
         // 摘要方案：只把开头一小段喂进语音会话，剩下的正文留在屏幕上。
@@ -753,6 +755,8 @@ export function useVoiceConversation({
    */
   const speakStreamed = useCallback(
     (responseId: string) => {
+      console.error(`[vsdiag] speakStreamed called id=${responseId} current=${responseIdRef.current ?? '-'}`)
+
       if (responseIdRef.current === responseId) {
         return
       }
@@ -771,7 +775,10 @@ export function useVoiceConversation({
       ensureBargeMonitor()
 
       void (async () => {
-        const chain = startSpeechChain({ ...ownerRef.current, messageId: responseId, source: 'voice-conversation' })
+        // 优先走流式 WS（边生成边喂 PCM）；后端不支持时退回按句合成链。
+        const stream = await startSpeechStream({ ...ownerRef.current, messageId: responseId, source: 'voice-conversation' })
+        console.error(`[vsdiag] streamer=${stream ? 'stream' : 'null'}`)
+        const chain = (stream ?? startSpeechChain({ ...ownerRef.current, messageId: responseId, source: 'voice-conversation' })) as SpeechChain
 
         // 循环可能在链建好后已经翻页（打断、关闭语音模式）。
         if (responseIdRef.current !== responseId) {
@@ -1083,6 +1090,7 @@ export function useVoiceConversation({
       }
 
       const response = pendingResponse()
+      console.error(`[vsdiag] gate status=${status} busy=${busy} awaiting=${awaitingSpokenResponseRef.current} resp=${response?.id ?? '-'} pending=${response?.pending} len=${response?.text?.length ?? 0} autoSpeak=${$autoSpeakReplies.get()}`)
 
       // "Read replies aloud" off (#44263): Voice Chat is STT-only — the reply
       // stays text on screen, the loop consumes it and re-arms the mic for
