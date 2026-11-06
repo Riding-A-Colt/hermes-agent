@@ -562,6 +562,10 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     },
     finish: () => {
       if (!finished && !settled) {
+        // Release the server's sentence buffer BEFORE ending: the tail of the
+        // reply is usually still unchunked when the turn completes, and a
+        // `done` that races a disconnect loses that last sentence.
+        send({ text: '\n\n' })
         finished = true
         send({ done: true })
       }

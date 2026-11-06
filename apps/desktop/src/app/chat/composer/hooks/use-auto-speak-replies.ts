@@ -68,6 +68,10 @@ interface LiveSpeech {
   opening: boolean
   sent: number
   finished: boolean
+  /** A seal is already scheduled for this run (see the pending→false re-read). */
+  sealing: boolean
+  /** Re-reads spent waiting for the text to settle before sealing. */
+  sealTries: number
   cappedText: string
   marked: ReturnType<typeof spokenReplyOf>
 }
@@ -129,20 +133,19 @@ export function useAutoSpeakReplies({
         return
       }
 
-      // The live message id flips while a reply streams (hydration rewrites the
-      // row). Follow it until we have actually spoken something; after that a
-      // different id means a new message and the old run keeps its own text.
-      if (reply.id !== live.key) {
-        if (live.sent > 0) {
-          return
-        }
-
-        live.key = reply.id
-      }
-
       // 摘要方案（付费 API 音色默认）：只念开头一小段，长文留在屏幕上。
       const budget = currentSpeechLimit()
       const target = budget > 0 ? capSpeechText(reply.text, budget) : reply.text
+
+      // The streaming row is swapped for the final message id the moment the
+      // turn seals, while the text it carries is the same reply only longer.
+      // Treating that id change as "a different message" dropped the reply's
+      // last few characters — the spoken audio ended mid-word.
+      if (reply.id !== live.key && live.sent > 0 && !target.startsWith(live.cappedText)) {
+        return
+      }
+
+      live.key = reply.id
       live.cappedText = target
 
       if (target.length > live.sent) {
@@ -151,13 +154,64 @@ export function useAutoSpeakReplies({
         live.sent = target.length
       }
 
-      if (!reply.pending || (budget > 0 && target.length >= budget)) {
-        // Mark only now: `pendingReply()` returns null for an id already marked
-        // spoken, so marking up front would blind the feed we depend on.
+      if (budget > 0 && target.length >= budget) {
         latest.current.markSpoken()
         live.marked = spokenReplyOf(sessionId)
         live.finished = true
+        live.sealing = true
         live.session.finish()
+
+        return
+      }
+
+      if (!reply.pending) {
+        // `pending` flips before the reply's final text part reaches the store;
+        // sealing on this tick sent text that stopped mid-sentence and the
+        // spoken audio lost its last clause. Re-read once the store settles.
+        if (!live.sealing) {
+          live.sealing = true
+          const slot = live
+
+          const seal = () => {
+            if (live !== slot || !slot.session || slot.finished) {
+              return
+            }
+
+            const late = latest.current.pendingReply()
+            let grew = false
+
+            if (late && (late.id === slot.key || late.text.startsWith(slot.cappedText))) {
+              const lateTarget = budget > 0 ? capSpeechText(late.text, budget) : late.text
+
+              if (lateTarget.length > slot.sent) {
+                console.error(`[asdiag] seal+ ${slot.sent}->${lateTarget.length}`)
+                slot.session.append(lateTarget.slice(slot.sent))
+                slot.sent = lateTarget.length
+                slot.cappedText = lateTarget
+                grew = true
+              }
+            }
+
+            // The store can keep growing for a beat after `pending` flips; seal
+            // only once it settles, or the tail is cut again on a slow tick.
+            if (grew && ++slot.sealTries < 8) {
+              window.setTimeout(seal, 250)
+
+              return
+            }
+
+            // Mark only now: `pendingReply()` returns null for an id already
+            // marked spoken, so marking up front would blind the re-read above.
+            latest.current.markSpoken()
+            slot.marked = spokenReplyOf(sessionId)
+            slot.finished = true
+            slot.session.finish()
+          }
+
+          window.setTimeout(seal, 250)
+        }
+
+        return
       }
     }
 
@@ -256,7 +310,15 @@ export function useAutoSpeakReplies({
       // Streaming reply: open the speech session on the first delta, then keep feeding it.
       const attempt = ++attemptSeq
       const slot: LiveSpeech = {
-        key: reply.id, session: null, opening: true, sent: 0, finished: false, cappedText: '', marked: null
+        key: reply.id,
+        session: null,
+        opening: true,
+        sent: 0,
+        finished: false,
+        sealing: false,
+        sealTries: 0,
+        cappedText: '',
+        marked: null
       }
       live = slot
 

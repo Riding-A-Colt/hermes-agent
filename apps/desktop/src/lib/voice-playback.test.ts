@@ -244,6 +244,25 @@ describe('voice-playback teardown (#91991)', () => {
     expect($voicePlayback.get().status).toBe('idle')
   })
 
+  it('finish releases the server sentence buffer before saying done', async () => {
+    // The reply's last sentence is usually still unchunked when the turn ends.
+    // Sending the paragraph boundary first makes the server cut it out while
+    // the socket is still open; `done` alone raced the close and lost it.
+    const session = await liveSession()
+    const ws = FakeSocket.instances[0]
+
+    ws.serverOpen()
+    session.append('最后这句还在缓冲里')
+    session.finish()
+
+    const frames = ws.sent.map(raw => JSON.parse(raw) as Record<string, unknown>)
+
+    expect(frames.slice(-2)).toEqual([{ text: '\n\n' }, { done: true }])
+    expect(frames.at(-3)).toEqual({ text: '最后这句还在缓冲里' })
+
+    stopVoicePlayback()
+  })
+
   it('a barge-in cuts a data-url playback and clears the audio element', async () => {
     gateway.setNextUrl(null) // no streaming endpoint → data-url fallback
 
