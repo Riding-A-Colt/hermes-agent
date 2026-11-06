@@ -63,8 +63,9 @@ def take_speech_interrupted() -> bool:
     at, _interrupted_at = _interrupted_at, None
     return at is not None and time.monotonic() - at < _INTERRUPT_TTL_S
 
-# Sentence boundary: after .!? followed by whitespace, or a blank line.
-SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?:\n\n)")
+# Sentence boundary: after .!? followed by whitespace, after CJK terminators (no trailing
+# space in CJK text), or a blank line.
+SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|[。！？…；]+|(?:\n\n)")
 # Reasoning tags come from the one canonical list (agent.think_scrubber), matched case-insensitively,
 # so feed() and flush() strip/cut exactly the tags every other reasoning-hiding surface does.
 _THINK_NAMES = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
