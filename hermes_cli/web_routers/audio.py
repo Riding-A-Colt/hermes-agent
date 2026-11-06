@@ -739,9 +739,12 @@ async def speak_stream_ws(ws: WebSocket) -> None:
 
     threading.Thread(target=_produce, daemon=True).start()
 
+    done_seen = False
+
     async def _pump_client():
         # Text frames feed synthesis; done ends the text; stop/disconnect
         # (or any unparseable frame) is barge-in.
+        nonlocal done_seen
         try:
             while True:
                 frame = json.loads(await ws.receive_text())
@@ -750,10 +753,16 @@ async def speak_stream_ws(ws: WebSocket) -> None:
                 if frame.get("stop"):
                     break
                 if frame.get("done"):
+                    done_seen = True
                     text_q.put(None)
         except Exception:
             pass
-        stop.set()
+        # A reply that already said `done` still owes its buffered tail: the
+        # client closes the socket the instant it stops caring, and treating
+        # that close as barge-in dropped the last sentence of nearly every
+        # reply (the tail was still sitting in the sentence chunker).
+        if not done_seen:
+            stop.set()
         text_q.put(None)  # unblock the producer
 
     pump = asyncio.ensure_future(_pump_client())
@@ -775,7 +784,10 @@ async def speak_stream_ws(ws: WebSocket) -> None:
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
-        stop.set()
+        # Same rule as the pump: a reply that already said `done` keeps its
+        # tail synthesis alive even though the socket just went away.
+        if not done_seen:
+            stop.set()
         text_q.put(None)
         pump.cancel()
         with contextlib.suppress(Exception):
