@@ -15,7 +15,7 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 
 import { ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
-import { clearOwnedSpeechTurnsForTests, useAutoSpeakReplies } from './use-auto-speak-replies'
+import { clearOwnedSpeechTurnsForTests, clearReadTurnsForTests, useAutoSpeakReplies } from './use-auto-speak-replies'
 
 vi.mock('@/lib/voice-playback', () => ({
   playSpeechText: vi.fn()
@@ -40,6 +40,7 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
     cleanup()
     clearSpokenRepliesForTests()
     clearOwnedSpeechTurnsForTests()
+    clearReadTurnsForTests()
     $autoSpeakReplies.set(false)
     setVoicePlaybackState({ ...IDLE_STATE })
     vi.clearAllMocks()
@@ -447,5 +448,74 @@ describe('useAutoSpeakReplies — final reply after tool calls', () => {
       'Here is the final report.',
       expect.objectContaining({ messageId: 'assistant-stream-2', source: 'read-aloud' })
     )
+  })
+
+  // 2026-11-07: 一轮回复被念了两遍。直播那条路先念完，封口那条路又整条念一次——
+  // 已念标记挂在消息 id 上，hydrate 改写 id 后标记没跟过去，封口就以为没念过。
+  // 现在按 turnKey 记死：同一轮只念一次，id 和文本怎么变都不影响。
+  it('reads a turn once even when the text grows after it was already spoken', async () => {
+    const claimed = new Set<string>()
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      claimAmbientCue: async (key: string) => !claimed.has(key) && Boolean(claimed.add(key))
+    }
+
+    $autoSpeakReplies.set(true)
+
+    const $messages = atom<ChatMessage[]>([])
+    let spokenId: string | null = null
+
+    // 标记"失效"：不记录已念 id，模拟 hydrate 改写后标记没迁移过去
+    const pendingReply = () => {
+      const messages = $messages.get()
+      const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+
+      if (!last) {
+        return null
+      }
+
+      return { id: last.id, pending: false, text: chatMessageText(last), turnKey: `${SESSION_ID}:0` }
+    }
+
+    const markSpoken = () => {
+      const messages = $messages.get()
+      const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+
+      spokenId = last?.id ?? null
+    }
+
+    vi.mocked(playSpeechText).mockResolvedValue(true)
+
+    renderHook(
+      () =>
+        useAutoSpeakReplies({
+          conversationActive: false,
+          failureLabel: 'read-aloud failed',
+          markSpoken,
+          pendingReply,
+          sessionId: SESSION_ID
+        }),
+      {
+        wrapper: ({ children }) => (
+          <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, $messages }}>{children}</ComposerScopeProvider>
+        )
+      }
+    )
+
+    act(() => {
+      $messages.set([assistantMessage('durable-7', '第一段。')])
+    })
+
+    await waitFor(() => expect(playSpeechText).toHaveBeenCalledTimes(1))
+
+    // 同一轮的文本继续长（或 hydrate 换了 id）：不能再开一次播报
+    await act(async () => {
+      $messages.set([assistantMessage('durable-7', '第一段。第二段。')])
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(spokenId).toBe('durable-7')
+    expect(playSpeechText).toHaveBeenCalledTimes(1)
   })
 })

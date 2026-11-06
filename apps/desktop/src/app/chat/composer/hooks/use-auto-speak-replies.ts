@@ -50,6 +50,48 @@ export function clearOwnedSpeechTurnsForTests(): void {
   ownedTurns.clear()
 }
 
+// Turns this window has already started reading aloud. The streaming session and
+// the sealed re-read both claim by text hash, and that hash changes as the text
+// grows — so when the spoken anchor fails to migrate across the hydration id
+// rewrite, the sealed pass saw "unspoken" and read the whole reply again (heard
+// twice, 2026-11-07). One pass per turn is the invariant; release on a failed
+// start so a retry can still speak.
+const readTurns = new Map<string, string>()
+const READ_TURNS_MAX = 64
+
+/** 同一轮里这段文字已经念过（或它是已念内容的开头）就别再开口。 */
+function turnAlreadyRead(turnKey: string | undefined, text: string): boolean {
+  const done = turnKey ? readTurns.get(turnKey) : undefined
+
+  if (!done || !text) {
+    return false
+  }
+
+  return text.startsWith(done) || done.startsWith(text)
+}
+
+function markTurnRead(turnKey: string | undefined, text: string): void {
+  if (!turnKey || !text) {
+    return
+  }
+
+  readTurns.set(turnKey, text)
+
+  if (readTurns.size > READ_TURNS_MAX) {
+    readTurns.delete(readTurns.keys().next().value!)
+  }
+}
+
+function releaseTurnRead(turnKey: string | undefined): void {
+  if (turnKey) {
+    readTurns.delete(turnKey)
+  }
+}
+
+export function clearReadTurnsForTests(): void {
+  readTurns.clear()
+}
+
 interface UseAutoSpeakReplies {
   conversationActive: boolean
   failureLabel: string
@@ -238,6 +280,8 @@ export function useAutoSpeakReplies({
         const budget = currentSpeechLimit()
         const spokenText = budget > 0 ? capSpeechText(reply.text, budget) : reply.text
 
+        markTurnRead(reply.turnKey, spokenText)
+
         void playSpeechText(spokenText, {
           connectionId,
           messageId: reply.id,
@@ -296,6 +340,10 @@ export function useAutoSpeakReplies({
 
       // Sealed reply: nothing left to stream, read it once.
       if (!reply.pending && !live) {
+        if (turnAlreadyRead(reply.turnKey, reply.text)) {
+          return
+        }
+
         speakSealed(reply, segmentKey, claimKey)
 
         return
@@ -336,6 +384,8 @@ export function useAutoSpeakReplies({
           return
         }
 
+        markTurnRead(reply.turnKey, reply.text)
+
         const session = await startSpeechStream({
           connectionId,
           messageId: reply.id,
@@ -354,6 +404,7 @@ export function useAutoSpeakReplies({
 
         if (!session) {
           // No streaming backend/provider: read it once when the turn seals.
+          releaseTurnRead(reply.turnKey)
           live = null
           const done = pendingReply()
 
@@ -396,6 +447,7 @@ export function useAutoSpeakReplies({
               live = null
             }
 
+            releaseTurnRead(reply.turnKey)
             releaseUnplayedSpokenReply(sessionId, slot.marked)
             notifyError(error, failureLabel)
           }
