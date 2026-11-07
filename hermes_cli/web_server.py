@@ -790,6 +790,7 @@ from hermes_cli.web_routers import (
     memory_providers as _memory_providers_routes,
     config_env as _config_env_routes,
     models as _models_routes,
+    magpie_quotas as _magpie_quotas_routes,
     messaging as _messaging_routes,
     messaging_relay as _messaging_relay_routes,
     oauth as _oauth_routes,
@@ -820,6 +821,7 @@ app.include_router(_upload_routes.router, dependencies=[_Depends(_route_on("brow
 app.include_router(_desktop_plugin_routes.router, dependencies=[_Depends(_route_on("desktop_plugins"))])
 app.include_router(_git_routes.router)
 app.include_router(_local_models_routes.router)
+app.include_router(_magpie_quotas_routes.router)
 app.include_router(_status_routes.router)
 app.include_router(_actions_routes.router)
 app.include_router(_audio_routes.router)
