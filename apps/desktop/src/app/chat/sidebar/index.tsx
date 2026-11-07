@@ -145,6 +145,7 @@ import {
   CAPABILITIES_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
+  QUOTA_ROUTE,
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution
 } from '../../routes'
@@ -247,6 +248,14 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     icon: props => <Codicon name="watch" {...props} />,
     route: CRON_ROUTE,
     keybindActionId: 'nav.cron',
+    tier: 'advanced'
+  },
+  // Quotas are a readout, not a workflow: same shelf as artifacts and cron.
+  {
+    id: 'subscriptions',
+    label: '订阅用量',
+    icon: props => <Codicon name="credit-card" {...props} />,
+    route: QUOTA_ROUTE,
     tier: 'advanced'
   }
 ]
@@ -1580,6 +1589,7 @@ export function ChatSidebar({
                   (item.id === 'messaging' && currentView === 'messaging') ||
                   (item.id === 'artifacts' && currentView === 'artifacts') ||
                   (item.id === 'cron' && currentView === 'cron') ||
+                  (item.id === 'subscriptions' && currentView === 'subscriptions') ||
                   // Contributed rows light up at their own route.
                   (currentView === 'extension' && Boolean(item.route) && pathname === item.route)
 

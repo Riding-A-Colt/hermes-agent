@@ -18,6 +18,7 @@ export const MESSAGING_ROUTE = '/messaging'
 export const WEBHOOKS_ROUTE = '/webhooks'
 export const ARTIFACTS_ROUTE = '/artifacts'
 export const CRON_ROUTE = '/cron'
+export const QUOTA_ROUTE = '/subscriptions'
 export const PROFILES_ROUTE = '/profiles'
 export const AGENTS_ROUTE = '/agents'
 export const STARMAP_ROUTE = '/starmap'
@@ -37,6 +38,7 @@ export type AppView =
   | 'extension'
   | 'messaging'
   | 'profiles'
+  | 'subscriptions'
   | 'settings'
   | 'starmap'
   | 'webhooks'
@@ -53,6 +55,7 @@ export type AppRouteId =
   | 'profiles'
   | 'settings'
   | 'starmap'
+  | 'subscriptions'
   | 'webhooks'
 
 export interface AppRoute {
@@ -71,6 +74,7 @@ export const APP_ROUTES = [
   { id: 'webhooks', path: WEBHOOKS_ROUTE, view: 'webhooks' },
   { id: 'artifacts', path: ARTIFACTS_ROUTE, view: 'artifacts' },
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
+  { id: 'subscriptions', path: QUOTA_ROUTE, view: 'subscriptions' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
   { id: 'agents', path: AGENTS_ROUTE, view: 'agents' },
   { id: 'starmap', path: STARMAP_ROUTE, view: 'starmap' }
