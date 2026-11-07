@@ -873,3 +873,50 @@ describe('the catalog renders per-model pricing', () => {
     expect(screen.queryByText('free')).toBeNull()
   })
 })
+
+// magpie serves several vendors under ONE provider row (workbuddy, opencode-go),
+// and two of them can carry the same leaf id. The row must still say which vendor
+// a model comes from — and the vendors must not interleave.
+describe('aggregator source grouping', () => {
+  it('keeps each vendor namespace together under its own heading', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          authenticated: true,
+          models: ['workbuddy/deepseek-v4.1-flash', 'opencode-go/deepseek-v4.1-flash', 'workbuddy/hy4free'],
+          name: 'MAGPIE',
+          slug: 'magpie'
+        }
+      ]
+    })
+
+    renderMenu()
+
+    const opencode = await screen.findByText('OpenCode Go')
+    const workbuddy = screen.getByText('WorkBuddy')
+    const deepseek = screen.getAllByText(/DeepSeek V4\.1/i)
+    const follows = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+
+    // Same leaf id from two vendors: both rows survive, under separate headings.
+    expect(deepseek).toHaveLength(2)
+    expect(follows(opencode, workbuddy)).toBe(true)
+  })
+
+  it('adds no heading when every row comes from the same namespace', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          authenticated: true,
+          models: ['workbuddy/deepseek-v4.1-flash', 'workbuddy/hy4free'],
+          name: 'MAGPIE',
+          slug: 'magpie'
+        }
+      ]
+    })
+
+    renderMenu()
+
+    await screen.findByText(/DeepSeek V4\.1/i)
+    expect(screen.queryByText('WorkBuddy')).toBeNull()
+  })
+})

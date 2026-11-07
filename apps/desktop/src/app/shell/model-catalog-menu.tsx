@@ -45,7 +45,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { displayModelName, modelDisplayParts, modelSourceId, modelSourceLabel } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
@@ -205,6 +205,9 @@ interface ModelCatalogMenuProps {
 interface ProviderGroup {
   families: ModelFamily[]
   provider: ModelOptionProvider
+  /** Vendor namespaces this provider's rows come from, sorted for display; two
+   *  or more means the group interleaves upstreams and needs sub-headings. */
+  sources: string[]
 }
 
 function queryErrorMessage(error: unknown): null | string {
@@ -788,6 +791,9 @@ export function ModelCatalogMenu({
                     onSubOpenChange={handleSubOpenChange}
                     provider={provider}
                     search={search}
+                    showSource={
+                      providerSourceIds(provider).length > 1 && provider.plan_usage?.kind !== 'usage_window'
+                    }
                   />
                 </Fragment>
               ))}
@@ -829,6 +835,14 @@ export function ModelCatalogMenu({
                 {!collapsed &&
                   group.families.map((family, familyIdx) => (
                     <Fragment key={`${group.provider.slug}:${family.id}`}>
+                      {!search &&
+                      group.sources.length > 1 &&
+                      (familyIdx === 0 ||
+                        modelSourceId(group.families[familyIdx - 1].id) !== modelSourceId(family.id)) ? (
+                        <DropdownMenuLabel className="px-2 pb-0.5 pt-1.5 text-[0.6rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
+                          {modelSourceLabel(modelSourceId(family.id))}
+                        </DropdownMenuLabel>
+                      ) : null}
                       {!search && sectionTitle(group, familyIdx, copyPicker) ? (
                         <DropdownMenuLabel className="px-2 pb-0.5 pt-1.5 text-[0.6rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
                           {sectionTitle(group, familyIdx, copyPicker)}
@@ -1009,6 +1023,10 @@ interface ModelFamilyRowProps {
   onSubOpenChange?: (open: boolean, key: string) => void
   provider: ModelOptionProvider
   search: string
+  /** Paint the vendor namespace beside the name — for sections that list rows
+   *  without per-vendor headings (Favorites), so two vendors' identical leaf ids
+   *  stay distinguishable. */
+  showSource?: boolean
 }
 
 /** One model family row: the favorite star, the trigger that commits the
@@ -1027,7 +1045,8 @@ function ModelFamilyRow({
   onSelect,
   onSubOpenChange,
   provider,
-  search
+  search,
+  showSource
 }: ModelFamilyRowProps): ReactElement {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
@@ -1172,6 +1191,11 @@ function ModelFamilyRow({
             <HighlightMatches foldSeparators query={search} text={name} />
           </span>
           {tag ? <ModelChip>{tag}</ModelChip> : null}
+          {showSource && modelSourceId(family.id) ? (
+            <Badge className="shrink-0 tracking-normal text-(--ui-text-tertiary)" size="xs" variant="outline">
+              {modelSourceLabel(modelSourceId(family.id))}
+            </Badge>
+          ) : null}
           {decoration.badge ? (
             <Badge className="shrink-0 uppercase tracking-wide" data-model-menu-row-badge="" size="xs" variant="muted">
               {decoration.badge}
@@ -1351,6 +1375,13 @@ function DownloadingModelRow({
   )
 }
 
+/** The vendor namespaces a provider's catalog carries (`workbuddy/deepseek…` →
+ *  workbuddy). One entry (or none) means every row is the provider's own and no
+ *  row needs a source chip. */
+function providerSourceIds(provider: ModelOptionProvider): string[] {
+  return [...new Set((provider.models ?? []).map(modelSourceId).filter(Boolean))]
+}
+
 // Collapsed we show the user's chosen models (or the curated default); typing
 // spans every available model so anything is reachable past the cut. A search
 // is itself a narrowing action, so we do NOT cap per-provider matches.
@@ -1421,7 +1452,25 @@ function groupModels(
     )
 
     if (families.length > 0) {
-      groups.push({ families, provider })
+      // One aggregator row can serve several vendors (magpie: workbuddy + opencode-go).
+      // Keep each vendor's models together and hand the renderer the headings, or the
+      // same leaf id reads twice with nothing telling the two apart.
+      const sources = [...new Set(families.map(family => modelSourceId(family.id)))].sort(
+        (a, b) => (modelSourceLabel(a) || '\uffff').localeCompare(modelSourceLabel(b) || '\uffff')
+      )
+
+      // A curated plan already owns this group's order and headings (Recommended /
+      // Other models, a pinned pick); regrouping by source would reorder those rows
+      // and detach the headings from what they describe.
+      const mixed = sources.length > 1 && provider.plan_usage?.kind !== 'usage_window'
+
+      if (mixed) {
+        families.sort(
+          (a, b) => sources.indexOf(modelSourceId(a.id)) - sources.indexOf(modelSourceId(b.id))
+        )
+      }
+
+      groups.push({ families, provider, sources: mixed ? sources : [] })
     }
   }
 

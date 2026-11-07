@@ -176,6 +176,38 @@ function splitTrailingTags(base: string): { base: string; variant: string; quant
   return { base, variant, quant }
 }
 
+/** The vendor namespace of a namespaced model id — `workbuddy/deepseek-v4.1-flash`
+ *  → `workbuddy`, and '' for a bare id. One upstream aggregator (magpie) lists
+ *  several vendors' catalogs under a single provider, and two of them can carry
+ *  the same leaf id; the namespace is the only thing telling those rows apart. */
+export function modelSourceId(model: string): string {
+  const trimmed = model.trim()
+  const slash = trimmed.indexOf('/')
+
+  return slash > 0 ? trimmed.slice(0, slash).trim() : ''
+}
+
+/** Human label for a model-id namespace: `opencode-go` → `OpenCode Go`. */
+export function modelSourceLabel(source: string): string {
+  const key = source.trim().toLowerCase()
+
+  if (!key) {
+    return ''
+  }
+
+  return SOURCE_LABELS[key] ?? applyVendorCasing(titleCase(key.replace(/[-_]/g, ' ')))
+}
+
+// Namespaces whose vendor writes its own casing (`opencode-go` title-cases to
+// "Opencode Go"). One pass over the whole word, like VENDOR_CASING above.
+const SOURCE_LABELS: Readonly<Record<string, string>> = {
+  auto: 'Auto',
+  'opencode-go': 'OpenCode Go',
+  openrouter: 'OpenRouter',
+  workbuddy: 'WorkBuddy',
+  zcode: 'ZCode'
+}
+
 /** Split a model id into a clean display name plus an optional grayed variant
  *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
 export function modelDisplayParts(model: string): { name: string; tag: string } {
