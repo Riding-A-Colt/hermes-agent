@@ -9,7 +9,8 @@ import {
   adoptSpokenReplySession,
   assistantTurnKey,
   markAssistantIdSpoken,
-  resolveSpokenReply
+  resolveSpokenReply,
+  spokenReplyOf
 } from '@/lib/spoken-reply'
 import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
 import { toLiveHistory } from '@/lib/voice-live'
@@ -129,26 +130,43 @@ export function useComposerVoice({
   /** Auto-speak selector: the latest unspoken reply only — a backlog collapses to the newest. */
   const pendingResponse = () => {
     const messages = $messages.get()
-    const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
     const spoken = resolveSpokenReply(sessionId, messages)
+    // Same selector the voice conversation uses: every unspoken bubble of the
+    // turn, in order. Taking "the last assistant row" dropped a follow-up
+    // segment after a tool call (tool steps leave blank rows behind), and an
+    // already-spoken row blinded the whole turn (2026-11-07).
+    const unspoken = collectUnspokenTurnSpeech(messages, spoken?.id ?? null)
 
-    if (!last || last.id === spoken?.id) {
-      return null
+    if (unspoken) {
+      return {
+        id: unspoken.id,
+        pending: unspoken.pending,
+        segmentText: unspoken.text,
+        text: unspoken.text,
+        turnKey: assistantTurnKey(sessionId, messages, unspoken.id),
+        charsBefore: 0
+      }
     }
 
-    const text = chatMessageText(last).trim()
+    // One bubble that kept growing after we read it: speak only the new tail.
+    if (spoken) {
+      const row = messages.findLast(m => m.id === spoken.id)
+      const full = row ? chatMessageText(row).trim() : ''
+      const read = spoken.chars ?? full.length
 
-    if (!text) {
-      return null
+      if (full.length > read) {
+        return {
+          id: spoken.id,
+          pending: Boolean(row?.pending),
+          segmentText: full,
+          text: full.slice(read).trim(),
+          turnKey: assistantTurnKey(sessionId, messages, spoken.id),
+          charsBefore: read
+        }
+      }
     }
 
-    return {
-      id: last.id,
-      pending: Boolean(last.pending),
-      segmentText: lastTextPartText(last),
-      text,
-      turnKey: assistantTurnKey(sessionId, messages, last.id)
-    }
+    return null
   }
 
   /**
@@ -162,8 +180,22 @@ export function useComposerVoice({
     return collectUnspokenTurnSpeech(messages, resolveSpokenReply(sessionId, messages)?.id ?? null)
   }
 
-  const consumePendingResponse = () => {
+  // Mark the reply we actually spoke. Marking "the last assistant message"
+  // swallowed the next segment of a multi-part turn: while the seal loop waits
+  // for the text to settle, the follow-up bubble already arrives and was marked
+  // spoken before it was ever read (heard part one only, 2026-11-07).
+  const consumePendingResponse = (replyId?: string, chars?: number) => {
     const messages = $messages.get()
+
+    if (replyId) {
+      // Only the id we were handed. Falling back to "mark the last visible
+      // assistant" here marked the NEXT segment spoken when the streaming id
+      // could not resolve, and that segment never played (2026-11-07).
+      markAssistantIdSpoken(sessionId, messages, replyId, chars)
+
+      return
+    }
+
     const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
 
     if (last) {

@@ -9,7 +9,7 @@ import {
   markAssistantIdSpoken,
   resolveSpokenReply
 } from '@/lib/spoken-reply'
-import { playSpeechText } from '@/lib/voice-playback'
+import { playSpeechText, startSpeechStream } from '@/lib/voice-playback'
 import { $voicePlayback, setVoicePlaybackState } from '@/store/voice-playback'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 
@@ -18,7 +18,8 @@ import { ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 import { clearOwnedSpeechTurnsForTests, clearReadTurnsForTests, useAutoSpeakReplies } from './use-auto-speak-replies'
 
 vi.mock('@/lib/voice-playback', () => ({
-  playSpeechText: vi.fn()
+  playSpeechText: vi.fn(),
+  startSpeechStream: vi.fn(async () => null)
 }))
 
 const SESSION_ID = 'session-under-test'
@@ -517,5 +518,158 @@ describe('useAutoSpeakReplies — final reply after tool calls', () => {
 
     expect(spokenId).toBe('durable-7')
     expect(playSpeechText).toHaveBeenCalledTimes(1)
+  })
+
+  // 多段回复（思考后还有第二段）里，第二段不能被当成"已念"。
+  // 旧逻辑收尾时标的是"最后一条助手消息"，封口等待期间第二段已经到场，
+  // 于是被标掉、再也不读（2026-11-07）。
+  it('reads the follow-up segment of a multi-part turn', async () => {
+    cleanup()
+    clearOwnedSpeechTurnsForTests()
+    clearReadTurnsForTests()
+    clearSpokenRepliesForTests()
+    setVoicePlaybackState(IDLE_STATE)
+
+    const claimed = new Set<string>()
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      claimAmbientCue: async (key: string) => !claimed.has(key) && Boolean(claimed.add(key))
+    }
+
+    $autoSpeakReplies.set(true)
+
+    const $messages = atom<ChatMessage[]>([])
+    const spoken = new Set<string>()
+
+    const markSpoken = vi.fn((replyId?: string, _chars?: number) => {
+      const list = $messages.get()
+      const target = replyId
+        ? list.find(message => message.id === replyId)
+        : list.findLast(message => message.role === 'assistant' && !message.hidden)
+
+      if (target) {
+        spoken.add(target.id)
+      }
+    })
+
+    const pendingReply = () => {
+      const next = $messages
+        .get()
+        .findLast(message => message.role === 'assistant' && !message.hidden && !spoken.has(message.id))
+
+      return next
+        ? { id: next.id, pending: false, text: chatMessageText(next), turnKey: `${SESSION_ID}:0` }
+        : null
+    }
+
+    vi.mocked(playSpeechText).mockResolvedValue(true)
+
+    renderHook(
+      () =>
+        useAutoSpeakReplies({
+          conversationActive: false,
+          failureLabel: 'read-aloud failed',
+          markSpoken,
+          pendingReply,
+          sessionId: SESSION_ID
+        }),
+      {
+        wrapper: ({ children }) => (
+          <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, $messages }}>{children}</ComposerScopeProvider>
+        )
+      }
+    )
+
+    act(() => {
+      $messages.set([assistantMessage('bubble-1', '第一段。')])
+    })
+
+    await waitFor(() => expect(playSpeechText).toHaveBeenCalledTimes(1))
+    // 标的是刚念的那一条，不是"最后一条"——否则第二段一到场就被标成已念
+    expect(markSpoken).toHaveBeenCalledWith('bubble-1', 4)
+
+    // 思考之后第二段到场：它必须也被念
+    await act(async () => {
+      $messages.set([assistantMessage('bubble-1', '第一段。'), assistantMessage('bubble-2', '第二段。')])
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(playSpeechText).toHaveBeenCalledTimes(2))
+    expect(playSpeechText).toHaveBeenNthCalledWith(2, '第二段。', expect.anything())
+    expect(spoken.has('bubble-2')).toBe(true)
+  })
+
+  // 工具调用之后还有第二段：它到场时第一段的流式会话还开着，旧代码把它当
+  // "不是同一条的延续"直接 return，等会话关掉又没有事件重试，第二段永远不念
+  // （2026-11-07，讲述北风与太阳的故事）。
+  it('opens a second pass when a new bubble arrives mid-stream', async () => {
+    cleanup()
+    clearOwnedSpeechTurnsForTests()
+    clearReadTurnsForTests()
+    clearSpokenRepliesForTests()
+    setVoicePlaybackState(IDLE_STATE)
+
+    const claimed = new Set<string>()
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      claimAmbientCue: async (key: string) => !claimed.has(key) && Boolean(claimed.add(key))
+    }
+
+    $autoSpeakReplies.set(true)
+
+    const $messages = atom<ChatMessage[]>([])
+    const sessions: { append: ReturnType<typeof vi.fn>; finish: ReturnType<typeof vi.fn> }[] = []
+
+    vi.mocked(startSpeechStream).mockImplementation(async () => {
+      const session = { append: vi.fn(), finish: vi.fn(), done: new Promise<'done'>(() => {}) }
+
+      sessions.push(session)
+
+      return session as never
+    })
+
+    const pending = (id: string, text: string): ChatMessage => ({ ...assistantMessage(id, text), pending: true })
+
+    const markSpoken = vi.fn()
+
+    const pendingReply = () => {
+      const last = $messages.get().findLast(message => message.role === 'assistant' && !message.hidden)
+
+      return last ? { id: last.id, pending: true, text: chatMessageText(last), turnKey: `${SESSION_ID}:0` } : null
+    }
+
+    renderHook(
+      () =>
+        useAutoSpeakReplies({
+          conversationActive: false,
+          failureLabel: 'read-aloud failed',
+          markSpoken,
+          pendingReply,
+          sessionId: SESSION_ID
+        }),
+      {
+        wrapper: ({ children }) => (
+          <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, $messages }}>{children}</ComposerScopeProvider>
+        )
+      }
+    )
+
+    act(() => {
+      $messages.set([pending('bubble-1', '第一段。')])
+    })
+
+    await waitFor(() => expect(sessions).toHaveLength(1))
+    expect(sessions[0].append).toHaveBeenCalledWith('第一段。')
+
+    // 第二段到场：先收掉第一段，再为它开新的一轮
+    await act(async () => {
+      $messages.set([pending('bubble-1', '第一段。'), pending('bubble-2', '第二段。')])
+      await Promise.resolve()
+    })
+
+    await waitFor(() => expect(sessions).toHaveLength(2))
+    expect(sessions[0].finish).toHaveBeenCalled()
+    expect(sessions[1].append).toHaveBeenCalledWith('第二段。')
   })
 })

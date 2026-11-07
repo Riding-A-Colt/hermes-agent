@@ -22,6 +22,8 @@ interface AutoSpeakReply {
   segmentText?: string
   /** Survives the live-id rewrite. Absent callers still speak; they just cannot join an in-flight play. */
   turnKey?: string
+  /** Characters of this message already spoken; `text` is the remainder. */
+  charsBefore?: number
 }
 
 // Turns this window speaks for. The window that wins a turn's first message
@@ -96,7 +98,7 @@ interface UseAutoSpeakReplies {
   conversationActive: boolean
   failureLabel: string
   /** Mark the current last reply spoken — shared dedupe with the conversation consumer. */
-  markSpoken: () => void
+  markSpoken: (replyId?: string, chars?: number) => void
   /** Latest assistant reply, or null; `pending` true while still streaming. */
   pendingReply: () => AutoSpeakReply | null
   /** Re-arm on session switch so opening a chat never reads its existing last reply. */
@@ -115,6 +117,8 @@ interface LiveSpeech {
   /** Re-reads spent waiting for the text to settle before sealing. */
   sealTries: number
   cappedText: string
+  /** Characters of the bubble that were already spoken before this run. */
+  charsBefore: number
   marked: ReturnType<typeof spokenReplyOf>
 }
 
@@ -153,6 +157,7 @@ export function useAutoSpeakReplies({
 
     let attemptSeq = 0
     let live: LiveSpeech | null = null
+    let holdTimer: number | null = null
 
     const stopLive = (finish: boolean) => {
       if (!live) {
@@ -184,6 +189,22 @@ export function useAutoSpeakReplies({
       // Treating that id change as "a different message" dropped the reply's
       // last few characters — the spoken audio ended mid-word.
       if (reply.id !== live.key && live.sent > 0 && !target.startsWith(live.cappedText)) {
+        // A different bubble: text resumed after a tool call. Returning here
+        // dropped it — the session for the previous bubble closed a beat later
+        // and no event was left to retry, so the second segment never played
+        // (heard only part one, 2026-11-07). Close this pass and let the new
+        // bubble open its own.
+        const previous = live
+
+        // No mark here: during streaming the bubble id is still the transient
+        // one, so an id-based mark cannot resolve and the fallback would mark
+        // whatever is last — the new bubble — and silence it.
+        previous.finished = true
+        previous.sealing = true
+        previous.session?.finish()
+        live = null
+        speakLatest()
+
         return
       }
 
@@ -197,7 +218,7 @@ export function useAutoSpeakReplies({
       }
 
       if (budget > 0 && target.length >= budget) {
-        latest.current.markSpoken()
+        latest.current.markSpoken(reply.id, live.charsBefore + reply.text.length)
         live.marked = spokenReplyOf(sessionId)
         live.finished = true
         live.sealing = true
@@ -244,7 +265,7 @@ export function useAutoSpeakReplies({
 
             // Mark only now: `pendingReply()` returns null for an id already
             // marked spoken, so marking up front would blind the re-read above.
-            latest.current.markSpoken()
+            latest.current.markSpoken(slot.key, slot.charsBefore + slot.cappedText.length)
             slot.marked = spokenReplyOf(sessionId)
             slot.finished = true
             slot.session.finish()
@@ -274,7 +295,7 @@ export function useAutoSpeakReplies({
           return
         }
 
-        markSpoken()
+        markSpoken(reply.id, (reply.charsBefore ?? 0) + reply.text.length)
         const marked = spokenReplyOf(sessionId)
         // 摘要方案（付费 API 音色默认）：只念开头一小段，长文留在屏幕上。
         const budget = currentSpeechLimit()
@@ -325,8 +346,19 @@ export function useAutoSpeakReplies({
       }
 
       // Another clip is playing (previous reply, manual playback): hold this one.
+      // Poll instead of waiting for the idle event — when the player was already
+      // mid-clip the transition that follows does not re-run this, and the reply
+      // was stranded unspoken (only part one heard, 2026-11-07).
       if (!live && $voicePlayback.get().status !== 'idle') {
         console.error('[asdiag] hold: another clip playing')
+
+        if (holdTimer === null) {
+          holdTimer = window.setTimeout(() => {
+            holdTimer = null
+            console.error('[asdiag] retry')
+            speakLatest()
+          }, 500)
+        }
 
         return
       }
@@ -366,6 +398,7 @@ export function useAutoSpeakReplies({
         sealing: false,
         sealTries: 0,
         cappedText: '',
+        charsBefore: reply.charsBefore ?? 0,
         marked: null
       }
       live = slot

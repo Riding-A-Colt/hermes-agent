@@ -19,6 +19,9 @@ export interface SpokenReplyAnchor {
   ordinal: number
   /** User-turn index at mark time. Absent on anchors built before turn identity. */
   turnIndex?: number
+  /** Characters of this message already read aloud, so a bubble that keeps
+   *  growing after a tool step is read as a suffix instead of being dropped. */
+  chars?: number
 }
 
 export interface SpokenReplyMessage {
@@ -148,14 +151,14 @@ export function absorbSpokenReplyRewrite(
       return spoken
     }
 
-    return { id: last.id, ordinal, turnIndex: spoken.turnIndex }
+    return { id: last.id, ordinal, turnIndex: spoken.turnIndex, ...(spoken.chars === undefined ? {} : { chars: spoken.chars }) }
   }
 
   if (ordinal !== spoken.ordinal) {
     return spoken
   }
 
-  return { id: last.id, ordinal }
+  return { id: last.id, ordinal, ...(spoken.chars === undefined ? {} : { chars: spoken.chars }) }
 }
 
 export function spokenReplyOf(sessionId: string | null | undefined): SpokenReplyAnchor | null {
@@ -169,7 +172,8 @@ function markSpokenReply(sessionId: string | null | undefined, anchor: SpokenRep
 export function markAssistantIdSpoken(
   sessionId: string | null | undefined,
   messages: readonly SpokenReplyMessage[],
-  id: string
+  id: string,
+  chars?: number
 ): void {
   const ordinal = assistantReplyOrdinal(messages, id)
 
@@ -177,7 +181,12 @@ export function markAssistantIdSpoken(
     return
   }
 
-  markSpokenReply(sessionId, { id, ordinal, turnIndex: assistantTurnIndex(messages, id) })
+  markSpokenReply(sessionId, {
+    id,
+    ordinal,
+    turnIndex: assistantTurnIndex(messages, id),
+    ...(chars === undefined ? {} : { chars })
+  })
 }
 
 /**
