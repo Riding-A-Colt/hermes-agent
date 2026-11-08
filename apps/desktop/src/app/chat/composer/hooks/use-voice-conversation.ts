@@ -125,6 +125,13 @@ export function useVoiceConversation({
   const spokenSourceLengthRef = useRef(0)
   // 已经拿到、还没送进语音会话的回复原文（按句送，见 feedSpeechSession）。
   const pendingSpeechRef = useRef('')
+  // 气泡 id 被正式消息 id 顶掉的那一帧：文字还是同一条、只是更长，
+  // 但 pendingResponse() 从这一刻起按新 id 返回。严格 id 比较会把剩下的
+  // 尾巴整段丢掉（实测末句停在一半），所以这里记下上一次读到的文本，
+  // 用「新文本以前缀继承它」认回同一条回复。
+  const sealingRef = useRef(false)
+  const sealTriesRef = useRef(0)
+  const lastFoldedTextRef = useRef('')
   const speechSessionRef = useRef<null | SpeechChain>(null)
   const stopBargeMonitorRef = useRef<(() => void) | null>(null)
   const bargeCapturePendingRef = useRef(false)
@@ -226,6 +233,9 @@ export function useVoiceConversation({
     responseIdRef.current = null
     spokenSourceLengthRef.current = 0
     pendingSpeechRef.current = ''
+    sealingRef.current = false
+    sealTriesRef.current = 0
+    lastFoldedTextRef.current = ''
   }
 
   const handleTurn = useCallback(
@@ -690,7 +700,15 @@ export function useVoiceConversation({
       const response = pendingResponse()
       console.error(`[vsdiag] tick status=${status} busy=${busy} awaiting=${awaitingSpokenResponseRef.current} resp=${response?.id ?? '-'} pending=${response?.pending} len=${response?.text?.length ?? 0} session=${speechSessionRef.current ? 'open' : '-'}`)
 
-      if (response && response.id === responseId) {
+      // 同一条回复，两种样子：还没换 id，或者 id 已被正式消息顶掉但文本接着长。
+      // 后者是常态——流式气泡在封印那一帧被替换，严格 id 比较会把这之后的
+      // 每一帧都判成「不是这条」，剩下的尾巴再也送不出去（实测末句停在一半）。
+      const sameReply =
+        response !== null &&
+        (response.id === responseId || (lastFoldedTextRef.current !== '' && response.text.startsWith(lastFoldedTextRef.current)))
+
+      if (sameReply) {
+        lastFoldedTextRef.current = response.text
         // 摘要方案：只把开头一小段喂进语音会话，剩下的正文留在屏幕上。
         const budget = currentSpeechLimit()
         const speakable = budget > 0 ? capSpeechText(response.text, budget) : response.text
@@ -728,8 +746,59 @@ export function useVoiceConversation({
           // Keep the session open for the next bubble, but speak this tail now.
           if (busyRef.current) {
             session.flush?.()
-          } else {
-            session.finish()
+
+            return
+          }
+
+          // `pending` 先翻 false、最后几个字后落进 store（与自动朗读同一个坑）。
+          // 当场收流就是 243 字的回复只念到 230 字。重读到文本不再增长为止
+          // （上限 8 次 / 每 250ms），每次只把新增的尾巴送出去。
+          if (!sealingRef.current) {
+            sealingRef.current = true
+
+            const seal = () => {
+              if (speechSessionRef.current !== session || responseIdRef.current !== responseId) {
+                return
+              }
+
+              const late = pendingResponse()
+              let grew = false
+
+              if (late && (late.id === responseId || late.text.startsWith(lastFoldedTextRef.current))) {
+                lastFoldedTextRef.current = late.text
+                const lateBudget = currentSpeechLimit()
+                const lateSpeakable = lateBudget > 0 ? capSpeechText(late.text, lateBudget) : late.text
+
+                if (lateSpeakable.length > spokenSourceLengthRef.current) {
+                  console.error(`[vsdiag] seal+ ${spokenSourceLengthRef.current}->${lateSpeakable.length}`)
+                  pendingSpeechRef.current += lateSpeakable.slice(spokenSourceLengthRef.current)
+                  spokenSourceLengthRef.current = lateSpeakable.length
+                  grew = true
+                }
+              }
+
+              const { sentences, rest } = cutSentences(pendingSpeechRef.current, false)
+              pendingSpeechRef.current = rest
+
+              for (const sentence of sentences) {
+                session.append(`${sentence.trim()}\n\n`)
+              }
+
+              if (grew && ++sealTriesRef.current < 8) {
+                window.setTimeout(seal, 250)
+
+                return
+              }
+
+              if (pendingSpeechRef.current.trim()) {
+                session.append(`${pendingSpeechRef.current.trim()}\n\n`)
+                pendingSpeechRef.current = ''
+              }
+
+              session.finish()
+            }
+
+            window.setTimeout(seal, 250)
           }
         }
       } else if (!busyRef.current) {
@@ -766,6 +835,9 @@ export function useVoiceConversation({
       responseIdRef.current = responseId
       spokenSourceLengthRef.current = 0
       pendingSpeechRef.current = ''
+      sealingRef.current = false
+      sealTriesRef.current = 0
+      lastFoldedTextRef.current = ''
       setStatus('speaking')
 
       // VAD barge-in: the user talking over the reply cuts playback, drops
