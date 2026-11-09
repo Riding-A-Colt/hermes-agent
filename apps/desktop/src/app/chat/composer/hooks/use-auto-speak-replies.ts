@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
+import { type SpeechBubble, takeQueue } from '@/lib/speech-queue'
 import { capSpeechText } from '@/lib/speech-text'
 import { releaseUnplayedSpokenReply, spokenReplyOf, spokenSegmentKey } from '@/lib/spoken-reply'
 import { playSpeechText, startSpeechStream } from '@/lib/voice-playback'
@@ -39,13 +40,20 @@ async function claimSpeech(turnKey: string | undefined, claimKey: string): Promi
     }
 
     ownedTurns.add(turnKey)
+    console.error(`[asdiag] cue claim turn "${turnKey.slice(-18)}"`)
 
     if (ownedTurns.size > OWNED_TURNS_MAX) {
       ownedTurns.delete(ownedTurns.values().next().value!)
     }
   }
 
-  return ownsAmbientCue(claimKey)
+  const owns = await ownsAmbientCue(claimKey)
+
+  if (owns) {
+    console.error(`[asdiag] cue claim "${claimKey.slice(-30)}"`)
+  }
+
+  return owns
 }
 
 export function clearOwnedSpeechTurnsForTests(): void {
@@ -101,6 +109,8 @@ interface UseAutoSpeakReplies {
   markSpoken: (replyId?: string, chars?: number) => void
   /** Latest assistant reply, or null; `pending` true while still streaming. */
   pendingReply: () => AutoSpeakReply | null
+  /** 这一轮的助手气泡（按顺序，含流式中的那条）——朗读的范围由它决定，不由拼接文本决定。 */
+  turnBubbles?: () => SpeechBubble[]
   /** Re-arm on session switch so opening a chat never reads its existing last reply. */
   sessionId: string | null | undefined
 }
@@ -111,6 +121,8 @@ interface LiveSpeech {
   session: null | SpeechStreamSession
   opening: boolean
   sent: number
+  /** 摘要预算（budget）口径下，本回合已经送出去的累计字数 */
+  total: number
   finished: boolean
   /** A seal is already scheduled for this run (see the pending→false re-read). */
   sealing: boolean
@@ -137,14 +149,33 @@ export function useAutoSpeakReplies({
   failureLabel,
   markSpoken,
   pendingReply,
-  sessionId
+  sessionId,
+  turnBubbles
 }: UseAutoSpeakReplies) {
   const enabled = useStore($autoSpeakReplies)
   // Wake on THIS composer's transcript: a tile subscribed to the primary's
   // would never fire on its own replies (and would fire on someone else's).
   const { $messages, connectionId, profile } = useComposerScope()
-  const latest = useRef({ connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile })
-  latest.current = { connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile }
+
+  const latest = useRef({
+    connectionId,
+    conversationActive,
+    failureLabel,
+    markSpoken,
+    pendingReply,
+    profile,
+    turnBubbles
+  })
+
+  latest.current = {
+    connectionId,
+    conversationActive,
+    failureLabel,
+    markSpoken,
+    pendingReply,
+    profile,
+    turnBubbles
+  }
 
   useEffect(() => {
     if (!enabled) {
@@ -158,6 +189,7 @@ export function useAutoSpeakReplies({
     let attemptSeq = 0
     let live: LiveSpeech | null = null
     let holdTimer: number | null = null
+
 
     const stopLive = (finish: boolean) => {
       if (!live) {
@@ -211,13 +243,39 @@ export function useAutoSpeakReplies({
       live.key = reply.id
       live.cappedText = target
 
-      if (target.length > live.sent) {
-        console.error(`[asdiag] append ${live.sent}->${target.length}`)
-        live.session.append(target.slice(live.sent))
-        live.sent = target.length
+      // 文本被折叠、重切之后起点会往前挪，长度甚至会比已送字数短——那就从头扫，
+      // 靠「已念窗口」把念过的部分挡掉，而不是拿一个错位的偏移去切。
+      if (target.length < live.sent) {
+        live.sent = 0
       }
 
-      if (budget > 0 && target.length >= budget) {
+      // 队列是唯一取料通道：不管有没有摘要预算，都不再按「整段拼接文本的偏移」
+      // 切片——今天所有重复都来自那条路径（2026-11-08）。预算只决定送到哪里收口。
+      const bubbles = latest.current.turnBubbles?.() ?? [{ sealed: !reply.pending, text: reply.text }]
+      const items = takeQueue(sessionId, bubbles)
+
+      live.sent = target.length
+
+      let remaining = budget > 0 ? Math.max(0, budget - live.total) : Number.POSITIVE_INFINITY
+
+      for (const item of items) {
+        let chunk = item.chunk
+
+        if (remaining < chunk.length) {
+          chunk = chunk.slice(0, Math.max(0, remaining))
+        }
+
+        if (!chunk) {
+          continue
+        }
+
+        console.error(`[asdiag] append send=${chunk.length}`)
+        live.session.append(chunk)
+        live.total += chunk.length
+        remaining -= chunk.length
+      }
+
+      if (budget > 0 && live.total >= budget) {
         latest.current.markSpoken(reply.id, live.charsBefore + reply.text.length)
         live.marked = spokenReplyOf(sessionId)
         live.finished = true
@@ -244,15 +302,18 @@ export function useAutoSpeakReplies({
             let grew = false
 
             if (late && (late.id === slot.key || late.text.startsWith(slot.cappedText))) {
-              const lateTarget = budget > 0 ? capSpeechText(late.text, budget) : late.text
-
-              if (lateTarget.length > slot.sent) {
-                console.error(`[asdiag] seal+ ${slot.sent}->${lateTarget.length}`)
-                slot.session.append(lateTarget.slice(slot.sent))
-                slot.sent = lateTarget.length
-                slot.cappedText = lateTarget
-                grew = true
+              if (!late.text.trim()) {
+                return
               }
+
+              const items = takeQueue(sessionId, latest.current.turnBubbles?.() ?? [{ sealed: true, text: late.text }])
+
+              for (const item of items) {
+                console.error(`[asdiag] seal+ send=${item.chunk.length}`)
+                slot.session.append(item.chunk)
+              }
+
+              grew = true
             }
 
             // The store can keep growing for a beat after `pending` flips; seal
@@ -299,9 +360,33 @@ export function useAutoSpeakReplies({
         const marked = spokenReplyOf(sessionId)
         // 摘要方案（付费 API 音色默认）：只念开头一小段，长文留在屏幕上。
         const budget = currentSpeechLimit()
-        const spokenText = budget > 0 ? capSpeechText(reply.text, budget) : reply.text
 
-        markTurnRead(reply.turnKey, spokenText)
+        const sealItems =
+          budget > 0
+            ? [{ chunk: capSpeechText(reply.text, budget), key: 'budget' }]
+            : takeQueue(sessionId, latest.current.turnBubbles?.() ?? [{ sealed: true, text: reply.text }])
+
+        markTurnRead(reply.turnKey, sealItems.map(item => item.chunk).join(''))
+
+        const spokenText = sealItems.map(item => item.chunk).join('')
+
+        // 整段都已经念过：不再开口。封口这条路的重复全落在这里。
+        if (!spokenText.trim()) {
+          console.error('[asdiag] seal replay suppressed')
+
+          return
+        }
+
+        console.error(
+          `[asdiag] seal tq chunks=${sealItems.length} heads=[${sealItems
+            .slice(0, 4)
+            .map(item => item.chunk.slice(0, 6))
+            .join('|')}]`
+        )
+
+        // 差分探针：五句只剩四句合成、无发送记录的第二遍，来自 playSpeechText 旁路
+        // （2026-11-09 12:55 实测）。给每个调用点独立标记，找到凶手为止。
+        console.error(`[asdiag] seal play len=${spokenText.length} "${spokenText.slice(0, 12)}…"`)
 
         void playSpeechText(spokenText, {
           connectionId,
@@ -389,11 +474,13 @@ export function useAutoSpeakReplies({
 
       // Streaming reply: open the speech session on the first delta, then keep feeding it.
       const attempt = ++attemptSeq
+
       const slot: LiveSpeech = {
         key: reply.id,
         session: null,
         opening: true,
         sent: 0,
+        total: 0,
         finished: false,
         sealing: false,
         sealTries: 0,
@@ -401,6 +488,7 @@ export function useAutoSpeakReplies({
         charsBefore: reply.charsBefore ?? 0,
         marked: null
       }
+
       live = slot
 
       const { connectionId, failureLabel, markSpoken, profile } = latest.current
@@ -457,6 +545,7 @@ export function useAutoSpeakReplies({
         void session.done.then(
           outcome => {
             console.error(`[asdiag] done=${outcome} sent=${slot.sent} capped=${slot.cappedText.length}`)
+
             if (live === slot) {
               live = null
             }
@@ -464,8 +553,17 @@ export function useAutoSpeakReplies({
             if (outcome === 'fallback') {
               releaseUnplayedSpokenReply(sessionId, slot.marked)
 
-              if (slot.cappedText) {
-                void playSpeechText(slot.cappedText, {
+              const fallbackText = takeQueue(
+                sessionId,
+                latest.current.turnBubbles?.() ?? [{ sealed: true, text: slot.cappedText }]
+              )
+                .map(item => item.chunk)
+                .join('')
+
+              if (fallbackText.trim()) {
+                console.error(`[asdiag] fallback play len=${fallbackText.length} "${fallbackText.slice(0, 12)}…"`)
+
+                void playSpeechText(fallbackText, {
                   connectionId,
                   messageId: slot.key,
                   profile,

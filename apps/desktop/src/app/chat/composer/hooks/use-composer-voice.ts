@@ -5,14 +5,15 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech, lastTextPartText } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
+import type { SpeechBubble } from '@/lib/speech-queue'
 import {
   adoptSpokenReplySession,
   assistantTurnKey,
   markAssistantIdSpoken,
-  resolveSpokenReply,
-  spokenReplyOf
+  resolveSpokenReply
 } from '@/lib/spoken-reply'
 import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
+import { adoptTurnAnchorSession, rowTimestampFresh, turnAnchor, turnAnchorIsFresh } from '@/lib/turn-anchor'
 import { toLiveHistory } from '@/lib/voice-live'
 import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
@@ -108,6 +109,7 @@ export function useComposerVoice({
   // eslint-disable-next-line no-restricted-syntax -- session-id adopt token, not an atom mirror
   useEffect(() => {
     adoptSpokenReplySession(previousSessionIdRef.current, sessionId)
+    adoptTurnAnchorSession(previousSessionIdRef.current, sessionId)
     previousSessionIdRef.current = sessionId
   }, [sessionId])
 
@@ -127,10 +129,111 @@ export function useComposerVoice({
     }
   }, [capturing, surfaceId])
 
+  /**
+   * 这一轮的助手气泡（按顺序，含流式中的那条）——自动朗读按「气泡」入队，
+   * 不按「拼起来的整段」推算，避免范围越积越长后整段重念（2026-11-08）。
+   */
+  const turnBubbles = () => {
+    const messages = $messages.get()
+
+    // 锚点闸：转录会被一张滞后的快照整体替换、再逐条重放（2026-11-09 实测静止
+    // 37 秒以上）。锚点退回旧行的那几帧静音——判据是锚点用户行的新鲜度（新轮
+    // 时间戳就在眼前）或它就是当前轮；存储丢了当前轮用户行、行后却跟着带新鲜
+    // 时间戳的助手行时，只放行那批新鲜行（liveTail）。
+    const verdict = turnAnchor(sessionId, messages)
+
+    if (!verdict.stable) {
+      return []
+    }
+
+    const lastUser = messages.findLastIndex(message => message.role === 'user')
+
+    // 没有锚点（用户行暂时缺失，比如 hydration 的空窗）就返回空：拿「全部消息」
+    // 当本轮会把历史整批喂进朗读——实测 21:49 那次，五段念完后同一个会话又追加了
+    // 205 字，等于把前几轮的历史重念了一遍（2026-11-08）。
+    if (lastUser < 0) {
+      return []
+    }
+
+    const bubbles: SpeechBubble[] = []
+
+    for (const message of messages.slice(lastUser + 1)) {
+      if (message.role !== 'assistant' || message.hidden) {
+        continue
+      }
+
+      // liveTail 下旧行不管多新的朗读队列都没见过它们的账——旧行直接滤掉，
+      // 否则回放重放的历史会整批重新开口。
+      if (verdict.liveTail && !rowTimestampFresh(message)) {
+        continue
+      }
+
+      const text = chatMessageText(message).trim()
+
+      if (text) {
+        bubbles.push({ sealed: !message.pending, text })
+      }
+    }
+
+    return bubbles
+  }
+
   /** Auto-speak selector: the latest unspoken reply only — a backlog collapses to the newest. */
   const pendingResponse = () => {
     const messages = $messages.get()
-    const spoken = resolveSpokenReply(sessionId, messages)
+
+    // 同 turnBubbles 的锚点闸：滞后快照/重放帧一律当「没有要念的」。
+    const verdict = turnAnchor(sessionId, messages)
+
+    if (!verdict.stable) {
+      return null
+    }
+
+    let spoken = resolveSpokenReply(sessionId, messages)
+
+    // 渲染进程刚起（重启/换窗）还没念过任何东西，锚点却是刚到的新鲜行：锚点之前
+    // 的内容归上一个渲染进程念（或本来就是历史），标掉再收，别把整段尾巴重念
+    // （2026-11-09 11:39 实测跨渲染进程重复：重放插入的 auto-continue 行触发放行，
+    // 空队列把本回合 10 分钟的旁白整批当新内容）。
+    if (!spoken && turnAnchorIsFresh(messages)) {
+      const lastUser = messages.findLastIndex(m => m.role === 'user')
+
+      const before = messages
+        .slice(0, lastUser)
+        .findLast(m => m.role === 'assistant' && !m.hidden && chatMessageText(m).trim())
+
+      if (before) {
+        markAssistantIdSpoken(sessionId, messages, before.id)
+        spoken = resolveSpokenReply(sessionId, messages)
+      }
+    }
+
+    // liveTail（存储丢了当前轮的用户行）：只认带新鲜时间戳的助手行，旧行全滤掉。
+    if (verdict.liveTail) {
+      const rows = messages.filter(
+        message => message.role === 'assistant' && !message.hidden && rowTimestampFresh(message) && chatMessageText(message).trim()
+      )
+
+      const row = rows.at(-1)
+
+      if (!row) {
+        return null
+      }
+
+      return {
+        id: row.id,
+        pending: Boolean(row.pending),
+        segmentText: lastTextPartText(row),
+        text: chatMessageText(row).trim(),
+        turnKey: assistantTurnKey(sessionId, messages, row.id),
+        charsBefore: 0
+      }
+    }
+
+    // 换轮凭据：用户消息条数只在真发新消息时变，消息 id 改写和工具行插入都不动它。
+    // 「已念窗口」按它清空——用 assistantTurnKey（序号算的）会在工具行插入时漂，
+    // 一漂就把窗口清掉、整轮重念（2026-11-08 实测）。
+    const turnNonce = String(messages.filter(message => message.role === 'user').length)
     // Same selector the voice conversation uses: every unspoken bubble of the
     // turn, in order. Taking "the last assistant row" dropped a follow-up
     // segment after a tool call (tool steps leave blank rows behind), and an
@@ -474,7 +577,8 @@ export function useComposerVoice({
     failureLabel: t.assistant.thread.readAloudFailed,
     markSpoken: consumePendingResponse,
     pendingReply: pendingResponse,
-    sessionId
+    sessionId,
+    turnBubbles
   })
 
   return {

@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { assistantTextPart, type ChatMessage, chatMessageText } from '@/lib/chat-messages'
+import { clearSpeechQueueForTests } from '@/lib/speech-queue'
 import {
   assistantTurnKey,
   clearSpokenRepliesForTests,
@@ -23,6 +24,12 @@ vi.mock('@/lib/voice-playback', () => ({
 }))
 
 const SESSION_ID = 'session-under-test'
+
+// 朗读游标是模块级状态，跨用例会串：上一组记下的「已送文本」会让下一组同一个
+// sessionId 的第一句话被当成念过（2026-11-08 加游标时踩到）。
+afterEach(() => {
+  clearSpeechQueueForTests()
+})
 const IDLE_STATE = { audioElement: null, messageId: null, sequence: 0, source: null, status: 'idle' as const }
 
 function assistantMessage(id: string, text: string): ChatMessage {
@@ -241,7 +248,12 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
         return null
       }
 
-      return { id: last.id, pending: false, text: chatMessageText(last) }
+      return {
+        id: last.id,
+        pending: false,
+        text: chatMessageText(last),
+        turnNonce: String(messages.filter(message => message.role === 'user').length)
+      }
     }
 
     const markSpoken = () => {
@@ -279,7 +291,7 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
     await waitFor(() => expect(resolveSpokenReply(SESSION_ID, $messages.get())).toBeNull())
   })
 
-  it('speaks a later turn that says the same thing', async () => {
+  it('suppresses an identical later turn inside the expiry window', async () => {
     $autoSpeakReplies.set(true)
 
     const $messages = atom<ChatMessage[]>([])
@@ -293,7 +305,12 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
         return null
       }
 
-      return { id: last.id, pending: false, text: chatMessageText(last) }
+      return {
+        id: last.id,
+        pending: false,
+        text: chatMessageText(last),
+        turnNonce: String(messages.filter(message => message.role === 'user').length)
+      }
     }
 
     const markSpoken = () => {
@@ -339,7 +356,7 @@ describe('useAutoSpeakReplies — Edge TTS fallback chain (#93515)', () => {
         assistantMessage('assistant-stream-2', 'Done.')
       ])
     })
-    await waitFor(() => expect(playSpeechText).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(playSpeechText).toHaveBeenCalledTimes(1))
   })
 })
 
@@ -543,6 +560,7 @@ describe('useAutoSpeakReplies — final reply after tool calls', () => {
 
     const markSpoken = vi.fn((replyId?: string, _chars?: number) => {
       const list = $messages.get()
+
       const target = replyId
         ? list.find(message => message.id === replyId)
         : list.findLast(message => message.role === 'assistant' && !message.hidden)
@@ -656,20 +674,95 @@ describe('useAutoSpeakReplies — final reply after tool calls', () => {
     )
 
     act(() => {
-      $messages.set([pending('bubble-1', '第一段。')])
+      // 首段过朗读队列的最小身份门槛（太短的流式前缀不入账，长过门槛才整段开口）
+      $messages.set([pending('bubble-1', '第一段。回来的时候电梯在检修。')])
     })
 
     await waitFor(() => expect(sessions).toHaveLength(1))
-    expect(sessions[0].append).toHaveBeenCalledWith('第一段。')
+    expect(sessions[0].append).toHaveBeenCalledWith('第一段。回来的时候电梯在检修。')
 
     // 第二段到场：先收掉第一段，再为它开新的一轮
     await act(async () => {
-      $messages.set([pending('bubble-1', '第一段。'), pending('bubble-2', '第二段。')])
+      $messages.set([
+        pending('bubble-1', '第一段。回来的时候电梯在检修。'),
+        pending('bubble-2', '第二段。家里的绿萝该浇水了，叶子有点蔫。')
+      ])
       await Promise.resolve()
     })
 
     await waitFor(() => expect(sessions).toHaveLength(2))
     expect(sessions[0].finish).toHaveBeenCalled()
-    expect(sessions[1].append).toHaveBeenCalledWith('第二段。')
+    expect(sessions[1].append).toHaveBeenCalledWith('第二段。家里的绿萝该浇水了，叶子有点蔫。')
+  })
+
+  // 封口之后 hydrate 把 id 换掉：markSpoken 标不上，pendingReply() 会把整轮又还
+  // 回来，于是整轮再念一遍（2026-11-08 15:56 实测：done 之后 39ms 又从第二段起头）。
+  it('does not replay a sealed reply when hydration swaps the id', async () => {
+    cleanup()
+    clearOwnedSpeechTurnsForTests()
+    clearReadTurnsForTests()
+    clearSpokenRepliesForTests()
+    setVoicePlaybackState(IDLE_STATE)
+
+    const claimed = new Set<string>()
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      claimAmbientCue: async (key: string) => !claimed.has(key) && Boolean(claimed.add(key))
+    }
+
+    $autoSpeakReplies.set(true)
+
+    const $messages = atom<ChatMessage[]>([])
+
+    const text =
+      '第一段：阳台外那棵树叶子开始黄了，落了一地。第二段：洗衣机脱水的时候声音有点大，可能要垫平一下。'
+
+    // 轮次键跟着 id 走：hydrate 换 id 就等于换了一轮，这正是旧代码重念的入口。
+    const pendingReply = () => {
+      const last = $messages.get().findLast(message => message.role === 'assistant' && !message.hidden)
+
+      return last
+        ? {
+            id: last.id,
+            pending: false,
+            text: chatMessageText(last),
+            turnKey: `${SESSION_ID}:${last.id}`,
+            turnNonce: '1'
+          }
+        : null
+    }
+
+    vi.mocked(playSpeechText).mockResolvedValue(true)
+
+    renderHook(
+      () =>
+        useAutoSpeakReplies({
+          conversationActive: false,
+          failureLabel: 'read-aloud failed',
+          markSpoken: () => undefined,
+          pendingReply,
+          sessionId: SESSION_ID
+        }),
+      {
+        wrapper: ({ children }) => (
+          <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, $messages }}>{children}</ComposerScopeProvider>
+        )
+      }
+    )
+
+    act(() => {
+      $messages.set([assistantMessage('assistant-stream-7', text)])
+    })
+
+    await waitFor(() => expect(playSpeechText).toHaveBeenCalledTimes(1))
+
+    // hydrate：同一条回复换成正式 id，文本一个字没变
+    await act(async () => {
+      $messages.set([assistantMessage('1794.2381-2-assistant', text)])
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(playSpeechText).toHaveBeenCalledTimes(1)
   })
 })

@@ -1296,6 +1296,8 @@ function useReadAloudAction({
       }
 
       try {
+        console.error(`[asdiag] message-button play len=${text.length} "${text.slice(0, 12)}…"`)
+
         await playSpeechText(text, { connectionId, messageId, profile, source: 'read-aloud' })
         markAssistantIdSpoken(sessionId, view.$messages.get(), messageId)
       } catch (error) {

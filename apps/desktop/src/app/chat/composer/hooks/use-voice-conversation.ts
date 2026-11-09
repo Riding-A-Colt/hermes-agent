@@ -979,6 +979,8 @@ export function useVoiceConversation({
         try {
           // syncOnly: one POST to /api/audio/speak — the whole (capped) reply in
           // a single synthesis, no WS sentence chunks.
+          console.error(`[asdiag] conversation play len=${speakable.length} "${speakable.slice(0, 12)}…"`)
+
           const started = await playSpeechText(speakable, {
             ...ownerRef.current,
             messageId: responseId,
