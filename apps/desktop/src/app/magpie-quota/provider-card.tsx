@@ -9,6 +9,7 @@
  */
 
 import { Button } from '@/components/ui/button'
+import { Tip } from '@/components/ui/tooltip'
 import { Loader2, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -87,17 +88,18 @@ export function ProviderCard({
             <div className="truncate text-[0.6875rem] text-(--ui-text-tertiary)">{provider.user}</div>
           ) : null}
         </div>
-        <Button
-          aria-label={`刷新 ${provider.name}`}
-          className="size-7 shrink-0 p-0"
-          disabled={refreshing}
-          onClick={() => onRefresh(provider.provider)}
-          size="sm"
-          title={readAt ? `刷新 · 上次读数 ${readAt}` : '刷新'}
-          variant="ghost"
-        >
-          {refreshing ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-        </Button>
+        <Tip label={readAt ? `刷新 · 上次读数 ${readAt}` : '刷新'}>
+          <Button
+            aria-label={`刷新 ${provider.name}`}
+            className="size-7 shrink-0 p-0"
+            disabled={refreshing}
+            onClick={() => onRefresh(provider.provider)}
+            size="sm"
+            variant="ghost"
+          >
+            {refreshing ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+          </Button>
+        </Tip>
       </header>
 
       {provider.balance ? (

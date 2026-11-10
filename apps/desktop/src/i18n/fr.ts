@@ -4240,6 +4240,8 @@ export const frOverrides = {
     tryAgain: 'Réessayer',
     notAvailableTitle: 'Mise à jour indisponible',
     unsupportedMessage: "Cette version de Hermes ne peut pas se mettre à jour depuis l'application.",
+    noLocalInstall:
+      'Aucune installation locale de Hermes à vérifier. Cette version se met à jour hors de l’application : fusionnez la version stable amont, puis reconstruisez.',
     connectionRetry: 'Vérifiez votre connexion et réessayez.',
     gitUnusable: 'Hermes n’a pas pu exécuter Git sur cet ordinateur et n’a donc pas pu rechercher de mises à jour.',
     connectionSettings: 'Paramètres de connexion',

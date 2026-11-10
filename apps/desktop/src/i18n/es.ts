@@ -4221,6 +4221,8 @@ export const esOverrides = {
     unsupportedMessage: 'Esta versión de Hermes no puede actualizarse desde la app.',
     connectionRetry:
       'Hermes no pudo llegar al servidor de actualizaciones. Comprueba tu conexión a internet y vuelve a intentarlo. Si usas un Hermes remoto, asegúrate de que esté en línea.',
+    noLocalInstall:
+      'No hay ninguna instalación local de Hermes que comprobar. Esta compilación se actualiza fuera de la aplicación: fusiona la versión estable upstream y vuelve a compilar.',
     gitUnusable: 'Hermes no pudo ejecutar Git en este equipo, así que no pudo buscar actualizaciones.',
     connectionSettings: 'Configuración de conexión',
     openDownloadPage: 'Abrir la página de descarga',

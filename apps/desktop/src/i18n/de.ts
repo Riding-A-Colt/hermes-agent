@@ -4230,6 +4230,8 @@ export const deOverrides = {
     tryAgain: 'Erneut versuchen',
     notAvailableTitle: 'Kein Update verfügbar',
     unsupportedMessage: 'Diese Hermes-Version kann sich nicht aus der App heraus aktualisieren.',
+    noLocalInstall:
+      'Keine lokale Hermes-Installation zum Prüfen. Dieser Build wird außerhalb der App aktualisiert: den stabilen Upstream-Release mergen, dann neu bauen.',
     connectionRetry: 'Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.',
     gitUnusable: 'Hermes konnte Git auf diesem Computer nicht ausführen und daher nicht nach Updates suchen.',
     connectionSettings: 'Verbindungseinstellungen',
