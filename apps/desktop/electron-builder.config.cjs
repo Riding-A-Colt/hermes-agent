@@ -128,7 +128,7 @@ module.exports = {
   directories: {
     output: 'release'
   },
-  files: ['dist/**', 'assets/**', 'public/**', 'package.json'],
+  files: ['dist/**', '!dist/mac-*/**', '!dist/win-*/**', '!dist/linux-*/**', 'assets/**', 'public/**', 'package.json'],
   beforeBuild: channelRequest ? async () => {
     await require(path.join(__dirname, 'scripts/before-build.mjs')).default()
     stageChannelManifest(__dirname, channelRequest)
