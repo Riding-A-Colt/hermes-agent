@@ -107,6 +107,14 @@ module.exports = {
       ],
   extraMetadata: {
     name: appNamePascal,
+    // Renderer and main process ship as bundles (dist/**), native modules arrive
+    // through --native-deps. electron-builder otherwise collects package.json's
+    // `dependencies` on every build, and on a pnpm store that walk recurses
+    // through the .pnpm symlink graph until the heap dies (SIGABRT at 16 GB,
+    // "searching for node modules pm=pnpm"). A `files` whitelist does not stop
+    // that step; clearing the field is what does. Nothing in the shipped app
+    // imports from node_modules, so this changes no payload.
+    dependencies: {},
     // Electron bootstrap reads package.productName before main.ts. Keep the
     // shipped stable default, but isolate nonstable userData from first access.
     // A stable-branded channel has no token and keeps stable's userData.
