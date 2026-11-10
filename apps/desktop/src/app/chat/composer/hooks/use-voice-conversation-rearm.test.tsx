@@ -88,6 +88,9 @@ vi.mock('@/lib/voice-playback', () => ({
   markVoicePlaybackInterrupted: vi.fn(),
   playSpeechText: mocks.playSpeechText,
   startSpeechChain: mocks.startSpeechChain,
+  // The hook opens a streaming session first and only falls back to the chain;
+  // this suite exercises the chain path.
+  startSpeechStream: vi.fn(async () => null),
   stopVoicePlayback: mocks.stopVoicePlayback,
   takeVoicePlaybackInterrupted: vi.fn(() => true)
 }))

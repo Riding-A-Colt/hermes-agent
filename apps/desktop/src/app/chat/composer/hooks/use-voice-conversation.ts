@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { type ResolvedOwner, resolveOwnerNow } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { capSpeechText, cutSentences } from '@/lib/speech-text'
+import { capSpeechText } from '@/lib/speech-text'
 import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
 import { startThinkingSound, stopThinkingSound } from '@/lib/thinking-sound'
 import { monitorSpeechDuringPlayback } from '@/lib/voice-barge-in'
@@ -31,14 +31,9 @@ import {
 import { useComposerScope } from '../scope'
 
 import { useMicRecorder } from './use-mic-recorder'
+import { feedVoiceConversationSpeech, type PendingVoiceResponse } from './voice-conversation-speech'
 
 export type ConversationStatus = 'idle' | 'listening' | 'transcribing' | 'thinking' | 'speaking'
-
-interface PendingVoiceResponse {
-  id: string
-  pending: boolean
-  text: string
-}
 
 interface VoiceConversationOptions {
   busy: boolean
@@ -373,8 +368,9 @@ export function useVoiceConversation({
 
   const startListening = useCallback(async () => {
     pendingStartRef.current = false
+    const conversation = conversationRef.current
 
-    if (!enabledRef.current || mutedRef.current || busyRef.current) {
+    if (!conversation || !enabledRef.current || mutedRef.current || busyRef.current) {
       return
     }
 
@@ -386,6 +382,8 @@ export function useVoiceConversation({
       return
     }
 
+    const current = () => conversationRef.current === conversation && enabledRef.current && !mutedRef.current
+
     // Let the wake-word listener fully release the capture device before we
     // open ours — opening the mic while wake still holds it makes getUserMedia
     // fail (the "clicked voice but it never starts listening" bug).
@@ -396,9 +394,7 @@ export function useVoiceConversation({
     }
 
     // enabled/muted/busy or an interleaved turn may have changed while we waited.
-    const conversation = conversationRef.current
-
-    if (!conversation || !enabledRef.current || mutedRef.current || busyRef.current || statusRef.current !== 'idle') {
+    if (!current() || busyRef.current || statusRef.current !== 'idle') {
       return
     }
 
@@ -419,6 +415,18 @@ export function useVoiceConversation({
         onMeterFailure: () => void handleTurn(),
         onSilence: () => void handleTurn()
       })
+
+      if (!current()) {
+        return
+      }
+
+      if (busyRef.current) {
+        handle.cancel()
+        pendingStartRef.current = true
+
+        return
+      }
+
       setStatus('listening')
       // Same warm-up as push-to-talk dictation: a cold local model loads while
       // the user speaks instead of inside the transcription timeout (#105955).
@@ -435,6 +443,10 @@ export function useVoiceConversation({
       clearTurnTimeout()
       turnTimeoutRef.current = window.setTimeout(() => void handleTurn(), 60_000)
     } catch (error) {
+      if (!current() || (error instanceof DOMException && error.name === 'AbortError')) {
+        return
+      }
+
       notifyError(error, voiceCopy.couldNotStartSession)
       pendingStartRef.current = false
       setStatus('idle')
@@ -633,10 +645,10 @@ export function useVoiceConversation({
     stopBargeMonitorRef.current = monitorSpeechDuringPlayback({
       isPlaying: () => $voicePlayback.get().status === 'speaking',
       thresholdMultiplier: $bargeInThresholdMultiplier.get(),
-      onSpeech: () => {
-        // Snapshot before playback is cut: the reply may be consumed by the
-        // time the capture is transcribed.
-        bargeEchoTextRef.current = $voicePlayback.get().status === 'speaking' ? (pendingResponse()?.text ?? '') : ''
+      onSpeech: duringPlayback => {
+        // Capture-time provenance survives a sentence gap before queued audio
+        // is delivered; snapshot the reply before playback is cut or consumed.
+        bargeEchoTextRef.current = duringPlayback ? (pendingResponse()?.text ?? '') : ''
         bargeCapturePendingRef.current = true
         bargedRef.current = true
         markVoicePlaybackInterrupted()
@@ -688,132 +700,22 @@ export function useVoiceConversation({
     return unsubscribe
   }, [])
 
-  /** Push any new reply text into the live session; finish when complete. */
   const feedSpeechSession = useCallback(
-    (responseId: string) => {
-      const session = speechSessionRef.current
-
-      if (!session || responseIdRef.current !== responseId) {
-        return
-      }
-
-      const response = pendingResponse()
-      console.error(`[vsdiag] tick status=${status} busy=${busy} awaiting=${awaitingSpokenResponseRef.current} resp=${response?.id ?? '-'} pending=${response?.pending} len=${response?.text?.length ?? 0} session=${speechSessionRef.current ? 'open' : '-'}`)
-
-      // 同一条回复，两种样子：还没换 id，或者 id 已被正式消息顶掉但文本接着长。
-      // 后者是常态——流式气泡在封印那一帧被替换，严格 id 比较会把这之后的
-      // 每一帧都判成「不是这条」，剩下的尾巴再也送不出去（实测末句停在一半）。
-      const sameReply =
-        response !== null &&
-        (response.id === responseId || (lastFoldedTextRef.current !== '' && response.text.startsWith(lastFoldedTextRef.current)))
-
-      if (sameReply) {
-        lastFoldedTextRef.current = response.text
-        // 摘要方案：只把开头一小段喂进语音会话，剩下的正文留在屏幕上。
-        const budget = currentSpeechLimit()
-        const speakable = budget > 0 ? capSpeechText(response.text, budget) : response.text
-        const capped = budget > 0 && response.text.length > speakable.length
-
-        if (speakable.length > spokenSourceLengthRef.current) {
-          pendingSpeechRef.current += speakable.slice(spokenSourceLengthRef.current)
-          spokenSourceLengthRef.current = speakable.length
+    (responseId: string) =>
+      feedVoiceConversationSpeech(
+        speechSessionRef,
+        responseIdRef,
+        responseId,
+        pendingResponse,
+        spokenSourceLengthRef,
+        busyRef,
+        {
+          pendingText: pendingSpeechRef,
+          lastFoldedText: lastFoldedTextRef,
+          sealing: sealingRef,
+          sealTries: sealTriesRef,
         }
-
-        // 服务端只按「ASCII 句号 + 空格」切句，中文回复永远凑不出一句，会一直压到
-        // 整条回复结束才合成——换成 asuka 这类非流式提供方时看着就像卡死在这儿。
-        // 客户端先按句切开，每句补一个空行：服务端把空行当段落边界，收到即可合成，
-        // 第一句的声音不用等全文。
-        const { sentences, rest } = cutSentences(pendingSpeechRef.current, false)
-        pendingSpeechRef.current = rest
-
-        for (const sentence of sentences) {
-          session.append(`${sentence.trim()}\n\n`)
-        }
-
-        if (capped && pendingSpeechRef.current.trim()) {
-          // 预算用完了：剩下的尾巴现在就送出去，不再等这条回复收尾。
-          session.append(`${pendingSpeechRef.current.trim()}\n\n`)
-          pendingSpeechRef.current = ''
-        }
-
-        if (!response.pending) {
-          if (pendingSpeechRef.current.trim()) {
-            session.append(`${pendingSpeechRef.current.trim()}\n\n`)
-            pendingSpeechRef.current = ''
-          }
-
-          // A sealed interim is a committed boundary even while its tool runs.
-          // Keep the session open for the next bubble, but speak this tail now.
-          if (busyRef.current) {
-            session.flush?.()
-
-            return
-          }
-
-          // `pending` 先翻 false、最后几个字后落进 store（与自动朗读同一个坑）。
-          // 当场收流就是 243 字的回复只念到 230 字。重读到文本不再增长为止
-          // （上限 8 次 / 每 250ms），每次只把新增的尾巴送出去。
-          if (!sealingRef.current) {
-            sealingRef.current = true
-
-            const seal = () => {
-              if (speechSessionRef.current !== session || responseIdRef.current !== responseId) {
-                return
-              }
-
-              const late = pendingResponse()
-              let grew = false
-
-              if (late && (late.id === responseId || late.text.startsWith(lastFoldedTextRef.current))) {
-                lastFoldedTextRef.current = late.text
-                const lateBudget = currentSpeechLimit()
-                const lateSpeakable = lateBudget > 0 ? capSpeechText(late.text, lateBudget) : late.text
-
-                if (lateSpeakable.length > spokenSourceLengthRef.current) {
-                  console.error(`[vsdiag] seal+ ${spokenSourceLengthRef.current}->${lateSpeakable.length}`)
-                  pendingSpeechRef.current += lateSpeakable.slice(spokenSourceLengthRef.current)
-                  spokenSourceLengthRef.current = lateSpeakable.length
-                  grew = true
-                }
-              }
-
-              const { sentences, rest } = cutSentences(pendingSpeechRef.current, false)
-              pendingSpeechRef.current = rest
-
-              for (const sentence of sentences) {
-                session.append(`${sentence.trim()}\n\n`)
-              }
-
-              if (grew && ++sealTriesRef.current < 8) {
-                window.setTimeout(seal, 250)
-
-                return
-              }
-
-              if (pendingSpeechRef.current.trim()) {
-                session.append(`${pendingSpeechRef.current.trim()}\n\n`)
-                pendingSpeechRef.current = ''
-              }
-
-              session.finish()
-            }
-
-            window.setTimeout(seal, 250)
-          }
-        }
-      } else if (!busyRef.current) {
-        // Reply consumed/vanished while we were speaking — close out the turn.
-        // Whatever we had not handed over yet goes first: a very short reply
-        // ("2。") never reaches a sentence boundary, so dropping the buffer
-        // here is what left it silent.
-        if (pendingSpeechRef.current.trim()) {
-          session.append(`${pendingSpeechRef.current.trim()}\n\n`)
-          pendingSpeechRef.current = ''
-        }
-
-        session.finish()
-      }
-    },
+      ),
     [pendingResponse]
   )
 
