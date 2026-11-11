@@ -400,6 +400,13 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   let started = false
   let settled = false
   let finished = false
+
+  // [audiadiag] 播放侧探针：每排一块就比一次「已排到的位置」和「现在播到哪」。
+  // lead<0 说明缓冲已经被抽干，那一刻声音必然断一下再接——就是听感上的破音。
+  let diagChunks = 0
+  let diagUnderruns = 0
+  let diagMaxBehind = 0
+  let diagMinLead = Number.POSITIVE_INFINITY
   const pendingSends: string[] = []
 
   let settle: (value: 'done' | 'fallback') => void = () => undefined
@@ -444,6 +451,10 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   liveStops.add(stop)
 
   const finishWhenDrained = () => {
+    console.error(`[audiadiag] done chunks=${diagChunks} underruns=${diagUnderruns} ` +
+        `maxBehind=${diagMaxBehind.toFixed(3)}s ` +
+        `minLead=${Number.isFinite(diagMinLead) ? diagMinLead.toFixed(3) : 'n/a'}s rate=${streamRate}`,
+    )
     const remainingMs = context ? Math.max(0, nextStartAt - context.currentTime) * 1_000 : 0
     window.setTimeout(() => settle('done'), remainingMs + 100)
   }
@@ -486,6 +497,31 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     source.buffer = buffer
     source.connect(context.destination)
 
+    if (diagChunks > 0) {
+      const lead = nextStartAt - context.currentTime
+
+      if (lead < diagMinLead) {
+        diagMinLead = lead
+      }
+
+      if (lead < 0) {
+        diagUnderruns += 1
+        diagMaxBehind = Math.max(diagMaxBehind, -lead)
+
+        if (diagUnderruns <= 5) {
+          console.error(`[audiadiag] underrun #${diagUnderruns} behind=${(-lead).toFixed(3)}s chunks=${diagChunks}`,
+          )
+        }
+      }
+    }
+
+    diagChunks += 1
+
+    if (diagChunks % 25 === 0) {
+      console.error(`[audiadiag] chunks=${diagChunks} lead=${(nextStartAt - context.currentTime).toFixed(2)}s`,
+      )
+    }
+
     const startAt = Math.max(context.currentTime + 0.05, nextStartAt)
     source.start(startAt)
     nextStartAt = startAt + buffer.duration
@@ -518,6 +554,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     if (frame.type === 'start') {
       streamRate = frame.sample_rate || 24_000
       context = new AudioContext()
+      console.error(`[audiadiag] start streamRate=${streamRate} contextRate=${context.sampleRate}`)
 
       // Autoplay policy can hand back a suspended context when playback wasn't
       // started by a user gesture (e.g. a wake-word-started voice turn). Resume
