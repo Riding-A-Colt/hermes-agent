@@ -2385,7 +2385,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             from tools.skills_tool import find_all_skills, sort_skills
             skills = sort_skills(
                 find_all_skills(
-                    skip_disabled=False, include_editorial=True
+                    skip_disabled=False
                 )
             )
         except Exception:
@@ -3593,6 +3593,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         raw_provider = getattr(agent, "provider", "")
         raw_model = getattr(agent, "model", "")
         actual_provider = self._clean_runtime_id(raw_provider, max_len=80) if isinstance(raw_provider, str) else ""
+        # A named custom provider (e.g. `providers.magpie` pointing at a local OpenAI-compatible
+        # gateway) reports its runtime id as the shared "custom" type, while the model lock records
+        # the name the request used. Compare against the requested name so the lock does not fail
+        # its own turn; the model comparison below still enforces the actual route.
+        _requested_provider = getattr(agent, "requested_provider", "")
+        if (isinstance(_requested_provider, str) and _requested_provider.strip()
+                and actual_provider == "custom"):
+            actual_provider = self._clean_runtime_id(_requested_provider, max_len=80)
         actual_model = self._clean_runtime_id(raw_model) if isinstance(raw_model, str) else ""
         resolved_provider = self._clean_runtime_id(runtime.get("provider"), max_len=80)
         for key, actual in (("provider", actual_provider), ("model", actual_model)):
