@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -30,13 +31,22 @@ _REAL_PROFILE_EXTRA_FLAGS = ("--disable-hang-monitor", "--disable-popup-blocking
 
 # [lily] Real-profile copy-browser idle close. Upstream only terminates it at process exit (the
 # atexit sweep, or `_consent_revoked`), so a permanently-resident backend pays its ~1.3 GB from
-# the first browsing task until the next restart. The browser janitor closes it once the copy has
-# been unused for `browser.real_profile_idle_timeout` seconds (0 disables, floor 300 so a bad
-# value cannot close it mid-task).
+# the first browsing task until the next restart. This module reaps it once the copy has been
+# unused for `browser.real_profile_idle_timeout` seconds (0 disables, floor 300 so a bad value
+# cannot close it mid-task). The reap cannot hang off the browser janitor: that thread only starts
+# when a browser *session* is created, and real-profile routing hands browser_exec a CDP endpoint
+# without ever asking the session layer for one, so the janitor never runs.
 _REAL_PROFILE_IDLE_TIMEOUT_DEFAULT = 1800
 # launcher key -> (wall clock of the last use, the copy dir it serves)
 _real_profile_last_used: dict[str, tuple[float, str]] = {}
 _real_profile_last_used_guard = threading.Lock()
+# The stamp also lands in the copy dir: serve and gateway both drive the one shared copy-browser,
+# and a per-process clock would let either of them reap a browser the other is still serving.
+_REAL_PROFILE_STAMP_FILE = ".lily-real-profile-last-use"
+_REAL_PROFILE_REAP_INTERVAL_S = 30.0
+_reaper_thread: Optional[threading.Thread] = None
+_reaper_guard = threading.Lock()
+_reaper_copy_dirs: list[str] = []
 
 
 def real_profile_fallback_note(err: str) -> str:
@@ -105,10 +115,77 @@ def _real_profile_idle_timeout() -> int:
                        _parse_real_profile_idle_timeout)
 
 
+def _stamp_path(copy_dir: str) -> Path:
+    return Path(copy_dir) / _REAL_PROFILE_STAMP_FILE
+
+
+def _write_stamp(copy_dir: str) -> None:
+    """Touch the shared stamp: the idle clock every process of this home reads."""
+    if not copy_dir:
+        return
+    try:
+        _stamp_path(copy_dir).touch()
+    except OSError as exc:
+        logger.debug("real-profile: idle stamp not written under %s: %s", copy_dir, exc)
+
+
+def _stamp_mtime(copy_dir: str) -> Optional[float]:
+    try:
+        return _stamp_path(copy_dir).stat().st_mtime
+    except OSError:
+        return None
+
+
+def _clear_stamp(copy_dir: str) -> None:
+    try:
+        _stamp_path(copy_dir).unlink()
+    except OSError:
+        pass
+
+
+def _chrome_started_at(copy_dir: str) -> Optional[float]:
+    """Start time of a Chromium already holding *copy_dir* — an orphan of a process that has exited.
+
+    Renderers inherit ``--user-data-dir`` too; the earliest start among them is the browser itself.
+    """
+    if not copy_dir:
+        return None
+    try:
+        import psutil
+    except Exception:  # health: allow BLE001 -- psutil is optional; without it an orphan just waits for a stamp
+        return None
+    needle = f"--user-data-dir={copy_dir}"
+    starts = []
+    for proc in psutil.process_iter(["cmdline", "create_time"]):
+        try:
+            if any(needle in arg for arg in (proc.info.get("cmdline") or [])):
+                starts.append(float(proc.info.get("create_time") or 0))
+        except Exception:  # health: allow BLE001 -- process vanished mid-walk
+            continue
+    live = [s for s in starts if s]
+    return min(live) if live else None
+
+
+def _known_copy_dirs() -> list[str]:
+    """Copy dirs of the detected default browser, discovered once (detection is not free)."""
+    global _reaper_copy_dirs
+    if not _reaper_copy_dirs:
+        try:
+            from hermes_cli.browser_connect import detect_default_chromium, real_profile_copy_dir
+            browser_name = detect_default_chromium()
+            if browser_name:
+                _reaper_copy_dirs = [real_profile_copy_dir(browser_name)]
+        except Exception as exc:  # health: allow BLE001 -- discovery is best-effort; stamps still cover us
+            logger.debug("real-profile: copy dir discovery failed: %s", exc)
+    return _reaper_copy_dirs
+
+
 def _stamp_real_profile_use(copy_dir: str) -> None:
-    """Mark the shared copy-browser as just served a call (read by the janitor's idle reap)."""
+    """Mark the shared copy-browser as just served a call (read by this module's idle reap)."""
     with _real_profile_last_used_guard:
         _real_profile_last_used[real_profile_key()] = (time.time(), copy_dir)
+    _write_stamp(copy_dir)
+    _ensure_real_profile_reaper()
 
 
 def _kill_chrome_on_copy_dir(copy_dir: str) -> int:
@@ -143,30 +220,68 @@ def _kill_chrome_on_copy_dir(copy_dir: str) -> int:
     return killed
 
 
+def _ensure_real_profile_reaper() -> None:
+    """Start this module's idle reaper, once per process.
+
+    It cannot ride the browser janitor: that thread only starts when a browser *session* is
+    created, and real-profile routing hands browser_exec a CDP endpoint without ever asking
+    the session layer for one — the janitor has never run on such a host.
+    """
+    global _reaper_thread
+    with _reaper_guard:
+        if _reaper_thread is not None and _reaper_thread.is_alive():
+            return
+        _reaper_thread = threading.Thread(target=_real_profile_reaper_loop, daemon=True,
+                                          name="real-profile-idle-reaper")
+        _reaper_thread.start()
+        logger.info("real-profile: idle reaper started (interval %ss)", int(_REAL_PROFILE_REAP_INTERVAL_S))
+
+
+def _real_profile_reaper_loop() -> None:
+    while True:
+        time.sleep(_REAL_PROFILE_REAP_INTERVAL_S)
+        try:
+            reap_idle_real_profile()
+        except Exception as exc:  # health: allow BLE001 -- one bad cycle must not kill the reaper
+            logger.debug("real-profile idle reap failed: %s", exc)
+
+
 def reap_idle_real_profile() -> int:
     """Close every shared copy-browser unused past the configured ceiling; returns how many closed.
 
-    Called by the browser janitor every 30 s. ``real_profile_cdp`` re-launches on the next call,
-    so this only costs the next real-profile task its snapshot/attach step.
+    The baseline is the stamp file in the copy dir (shared by every process of this home), else
+    this process's last use, else the start of a Chromium left behind by a process that has exited.
+    ``real_profile_cdp`` re-launches on the next call, so this only costs the next real-profile
+    task its snapshot/attach step.
     """
     timeout = _real_profile_idle_timeout()
     if timeout <= 0:
         return 0
     now = time.time()
     with _real_profile_last_used_guard:
-        stale = [(key, used, copy_dir) for key, (used, copy_dir) in _real_profile_last_used.items()
-                 if now - used > timeout]
-        for key, _, _ in stale:
-            _real_profile_last_used.pop(key, None)
+        candidates: dict[str, tuple[Optional[float], str]] = {
+            key: (used, copy_dir) for key, (used, copy_dir) in _real_profile_last_used.items()}
+    for copy_dir in _known_copy_dirs():
+        candidates.setdefault(real_profile_key(), (None, copy_dir))
     from tools.browser_launcher import stop_browser
-    for key, used, copy_dir in stale:
-        logger.info("real-profile: idle for %ss (limit %ss) — closing", int(now - used), timeout)
+    reaped = 0
+    for key, (used, copy_dir) in candidates.items():
+        baseline = _stamp_mtime(copy_dir)
+        if baseline is None:
+            baseline = used if used is not None else _chrome_started_at(copy_dir)
+        if baseline is None or now - baseline <= timeout:
+            continue
+        with _real_profile_last_used_guard:
+            _real_profile_last_used.pop(key, None)
+        logger.info("real-profile: idle for %ss (limit %ss) — closing", int(now - baseline), timeout)
         try:
             stop_browser(key)
         except Exception as e:  # health: allow BLE001 -- janitor boundary: keep reaping the rest
             logger.debug("real-profile idle stop failed for %s: %s", key, e)
         _kill_chrome_on_copy_dir(copy_dir)
-    return len(stale)
+        _clear_stamp(copy_dir)
+        reaped += 1
+    return reaped
 
 
 def _consent_revoked() -> tuple[None, None]:
