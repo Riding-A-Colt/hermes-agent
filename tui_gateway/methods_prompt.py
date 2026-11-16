@@ -611,7 +611,13 @@ def _reopen_if_finalized(db, session_id: str) -> None:
     ``ended_at``/``end_reason`` — opening a finished session must not re-light DB-derived
     liveness with no new activity. This runs on the submit path (the user actually sent
     something) before the turn's first transcript write, so the row the turn writes is
-    live again. Best-effort: a failed read must not block the send."""
+    live again. Best-effort: a failed read must not block the send.
+
+    A cron run session sent into HERE is an ADOPTED chat, not a live run: the reopen makes the
+    row byte-identical to a run whose scheduler died before finalizing, and the Desktop write
+    gate reads that shape as a zombie (#88443). So the adoption is stamped durably on every
+    submit into one — one turn of chat must not lock the next one out.
+    """
     if not session_id:
         return
     try:
@@ -619,8 +625,18 @@ def _reopen_if_finalized(db, session_id: str) -> None:
     except Exception:
         logger.debug("finalized-session reopen check failed for %s", session_id, exc_info=True)
         return
-    if row is not None and row.get("ended_at") is not None:
+    if row is None:
+        return
+    if row.get("ended_at") is not None:
         db.reopen_session(session_id)
+    if (row.get("source") or "") != "cron":
+        return
+    # Stamped on EVERY submit into a run's session, not only on the reopening one: the row may
+    # already be open (a stale-route recovery) and would otherwise never carry the marker.
+    try:
+        db.mark_cron_run_adopted(session_id)
+    except Exception:
+        logger.debug("cron-run adopt stamp failed for %s", session_id, exc_info=True)
 
 
 def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):

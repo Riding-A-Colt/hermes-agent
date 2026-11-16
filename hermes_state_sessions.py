@@ -786,6 +786,12 @@ class SessionSessionsMixin:
             return
         self._write_model_config_patch(session_id, patch)
 
+    def mark_cron_run_adopted(self, session_id: str) -> bool:
+        """Durably mark a ``source='cron'`` run session a user took over by sending into it (#88443),
+        so the Desktop write gate stops reading the reopened row as a zombie run."""
+        from hermes_state_sessions_model_config import mark_cron_run_adopted
+        return mark_cron_run_adopted(self, session_id)
+
     def get_session_model_config_value(self, session_id: str, key: str, default: Any = None) -> Any:
         """Read one key out of a session's model_config JSON (tolerant parse)."""
         session = self.get_session(session_id) or {}

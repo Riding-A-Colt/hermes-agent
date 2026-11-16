@@ -130,6 +130,38 @@ def test_reopen_if_finalized_leaves_live_rows_untouched(tmp_path):
     db.close()
 
 
+def test_a_reopened_cron_run_is_stamped_as_adopted(tmp_path):
+    """Reopening by a user turn leaves a cron row in the zombie run's exact shape (``ended_at``
+    NULL, no scheduler), so the Desktop write gate would lock the next message out. The adopt
+    stamp is that difference and it must be on the reopened cron row — and only there (#88443)."""
+    from hermes_cli.web_routers.cron import cron_run_scheduler_owned
+    from hermes_state_sessions import _parse_model_config
+    from tui_gateway import methods_prompt
+
+    home = tmp_path / "home"
+    home.mkdir()
+    db = SessionDB(home / "state.db")
+    try:
+        db.create_session("cron-run", source="cron")
+        db.append_message("cron-run", "user", "scheduled brief", timestamp=100.0)
+        db.end_session("cron-run", "cron_complete")
+        db.create_session("plain-chat", source="desktop")
+        db.append_message("plain-chat", "user", "hello", timestamp=100.0)
+        db.end_session("plain-chat", "agent_close")
+
+        methods_prompt._reopen_if_finalized(db, "cron-run")
+        methods_prompt._reopen_if_finalized(db, "plain-chat")
+
+        cron_row = db.get_session("cron-run")
+        assert cron_row["ended_at"] is None
+        assert "_adopted_from_cron" in _parse_model_config(cron_row["model_config"])
+        assert db.get_session("plain-chat")["model_config"] is None
+        # The gate's answer for that row is now "a chat you own", not "a zombie run".
+        assert cron_run_scheduler_owned({**cron_row, "cron_job_id": "job-1"}, None) is True
+    finally:
+        db.close()
+
+
 def test_isolated_dispatch_reopens_a_finalized_row(tmp_path, monkeypatch):
     """The compute-host seam: prompt.submit returns BEFORE its persist on an isolated turn
     (the child process runs the turn), so the reopen must live on the dispatch path every

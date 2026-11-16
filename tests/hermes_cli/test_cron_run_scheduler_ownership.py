@@ -6,6 +6,7 @@ the durable answer the desktop keys its view-only decision on; these tests drive
 execution ledger in a temp HERMES_HOME.
 """
 
+import json
 import sqlite3
 import subprocess
 import sys
@@ -160,3 +161,61 @@ def test_session_detail_stamps_the_same_answer_for_cron_runs_only(homes):
     assert _rt_cron.cron_run_scheduler_owned(row, None) is True
     assert _rt_cron.cron_run_scheduler_owned({**row, "ended_at": claimed + 5}, None) is False
     assert _rt_cron.cron_run_scheduler_owned({**row, "source": "desktop"}, None) is None
+
+
+def _adopted(row: dict) -> dict:
+    """The same never-closed row, after a user's first turn adopted it (its ``ended_at`` is
+    cleared by ``reopen_session``, which alone reads as a zombie)."""
+    return {**row, "model_config": json.dumps({"_adopted_from_cron": 1.0})}
+
+
+def test_a_user_adopted_run_is_writable_with_no_scheduler_anywhere(homes, monkeypatch):
+    """One turn of chat must not lock the next one out: adoption is the durable answer, and it
+    holds even though no attempt is in flight and the activity window is long stale (#88443)."""
+    job_id = "adopted"
+    row = _adopted(_open_row(job_id, "20260929_120000", 1000.0))
+
+    assert _runs(monkeypatch, job_id, [row])[row["id"]]["scheduler_owned"] is True
+    assert _rt_cron.cron_run_scheduler_owned(row, None) is True
+
+    # The very same row without the marker is a zombie: adoption, not the shape, is the difference.
+    unadopted = {k: v for k, v in row.items() if k != "model_config"}
+    assert _runs(monkeypatch, job_id, [unadopted])[unadopted["id"]]["scheduler_owned"] is False
+
+
+def test_adoption_marker_never_makes_a_non_cron_session_writable(homes):
+    """Only ``source='cron'`` rows are gated, so the marker on anything else is inert."""
+    row = {"id": "20260929_120000_abc", "source": "desktop", "started_at": 1.0,
+           "last_active": 1.0, "ended_at": None, "archived": False,
+           "model_config": json.dumps({"_adopted_from_cron": 1.0})}
+
+    assert _rt_cron.cron_run_scheduler_owned(row, None) is None
+    assert _rt_cron.cron_run_user_adopted(row) is False
+
+
+def test_mark_cron_run_adopted_stamps_only_cron_rows_and_only_once(homes):
+    """The stamp lives in ``model_config`` (no schema change) and keeps the keys already there."""
+    from hermes_state import SessionDB
+    from hermes_state_sessions import _parse_model_config
+    from hermes_state_sessions_model_config import CRON_ADOPTED_MODEL_CONFIG_KEY
+
+    db = SessionDB(homes["default"] / "state.db")
+    try:
+        db.create_session("cron-run", source="cron", model_config={"_branched_from": "parent-1"})
+        db.create_session("plain-chat", source="desktop")
+
+        assert db.mark_cron_run_adopted("cron-run") is True
+        first = _parse_model_config(db.get_session("cron-run")["model_config"])
+        assert first[CRON_ADOPTED_MODEL_CONFIG_KEY] is not None
+        assert first["_branched_from"] == "parent-1", "the merge must not drop other keys"
+
+        assert db.mark_cron_run_adopted("cron-run") is True
+        second = _parse_model_config(db.get_session("cron-run")["model_config"])
+        assert second[CRON_ADOPTED_MODEL_CONFIG_KEY] == first[CRON_ADOPTED_MODEL_CONFIG_KEY], \
+            "a re-adopt keeps the first stamp"
+
+        assert db.mark_cron_run_adopted("plain-chat") is False
+        assert db.get_session("plain-chat")["model_config"] is None
+        assert db.mark_cron_run_adopted("missing-row") is False
+    finally:
+        db.close()

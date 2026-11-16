@@ -86,7 +86,12 @@ _CHAIN_CAP = 1000
 # carries them onto the child (per-segment keys such as usage anchors stay behind).
 # ``prompt_refresh_epoch`` too: without it a rotated child looks older than any past
 # ``hermes sessions refresh-prompts`` request and rebuilds its prompt once more after eviction.
-_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run", "prompt_refresh_epoch")
+# ``_adopted_from_cron`` (``hermes_state_sessions_model_config.CRON_ADOPTED_MODEL_CONFIG_KEY``): an adopted
+# run's continuation is the same adopted chat; dropping the key would let the Desktop write gate
+# read the child as a zombie run again (#88443).
+_CONVERSATION_MODEL_CONFIG_KEYS = (
+    "onboarding_run", "prompt_refresh_epoch", "_adopted_from_cron",
+)
 
 
 def _walk_compression_chain(session_id: str, step) -> list[str]:

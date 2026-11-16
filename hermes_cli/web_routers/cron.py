@@ -462,6 +462,28 @@ def _run_owned_by(session: dict[str, Any], inflight: Optional[dict[str, Any]]) -
     return claimed_at is not None and started_at >= claimed_at - _OWNERSHIP_CLAIM_GRACE_SECONDS
 
 
+def cron_run_user_adopted(session: dict[str, Any]) -> bool:
+    """Whether a cron run session was taken over by a user turn (#88443).
+
+    The first user turn in a run's session reopens the row (``ended_at`` cleared), leaving it in
+    the exact shape of a run whose scheduler died before finalizing. ``SessionDB.mark_cron_run_adopted``
+    stamps the difference into ``model_config``; this reads it back. Only a ``source='cron'`` row
+    can carry it.
+    """
+    if session.get("source") != "cron":
+        return False
+    from hermes_state_sessions import _parse_model_config
+    from hermes_state_sessions_model_config import CRON_ADOPTED_MODEL_CONFIG_KEY
+
+    return _parse_model_config(session.get("model_config")).get(CRON_ADOPTED_MODEL_CONFIG_KEY) is not None
+
+
+def _run_writable(session: dict[str, Any], inflight: Optional[dict[str, Any]]) -> bool:
+    """The Desktop write gate's answer for one run row: the scheduler still owns it, or a user
+    adopted it by sending a turn here. Either way it is not a zombie run, so writing is safe."""
+    return _run_owned_by(session, inflight) or cron_run_user_adopted(session)
+
+
 def cron_run_scheduler_owned(session: dict[str, Any], profile: Optional[str] = None) -> Optional[bool]:
     """``scheduler_owned`` for one session row, or None when it is not a cron run session.
 
@@ -470,6 +492,9 @@ def cron_run_scheduler_owned(session: dict[str, Any], profile: Optional[str] = N
     A unified-runtime run's ``local-*`` id says nothing, so the caller stamps the
     row's ``cron_job_id`` / ``cron_execution_id`` (``SessionDB.cron_run_identity``)
     first; a legacy ``cron_{job_id}_{timestamp}`` id still names its job.
+
+    True also for a run a user ADOPTED (see ``cron_run_user_adopted``): the client asks
+    "may I write here", and a row a user already owns is a chat, not a zombie to keep out of.
     """
     if session.get("source") != "cron":
         return None
@@ -478,6 +503,8 @@ def cron_run_scheduler_owned(session: dict[str, Any], profile: Optional[str] = N
         return None
     if session.get("ended_at") is not None:
         return False
+    if cron_run_user_adopted(session):
+        return True
     with _owner_home_scope(profile):
         return _run_owned_by(session, _live_inflight_execution(job_id))
 
@@ -528,7 +555,7 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
         inflight = _live_inflight_execution(canonical)
         for s in session_runs:
             s["is_active"] = s.get("ended_at") is None and (now - s.get("last_active", s.get("started_at", 0))) < 300
-            s["scheduler_owned"] = _run_owned_by(s, inflight)
+            s["scheduler_owned"] = _run_writable(s, inflight)
             s["archived"] = bool(s.get("archived"))
             if selected:
                 s["profile"] = selected
